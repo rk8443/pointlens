@@ -77,5 +77,8 @@
     "vite": "catalog:",
     "wouter": "^3.3.5",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "tiff": "^7.1.3"
   }
 }

@@ -1,3 +1,5 @@
+import { decode as decodeTiff } from "tiff";
+
 export interface PointCloudData {
   positions: Float32Array;
   colors?: Float32Array;
@@ -7,20 +9,143 @@ export interface PointCloudData {
     min: [number, number, number];
     max: [number, number, number];
   };
+  sourceInfo?: {
+    width?: number;
+    height?: number;
+    channels?: number;
+    bitDepth?: number;
+  };
+}
+
+function buildBoundingBox(positions: Float32Array): PointCloudData["boundingBox"] {
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < positions.length; i += 3) {
+    const x = positions[i], y = positions[i + 1], z = positions[i + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
+function normalizeChannel(data: ArrayLike<number>, bitDepth: number): Float32Array {
+  const maxVal = bitDepth === 32 ? 1.0 : (1 << bitDepth) - 1;
+  const out = new Float32Array(data.length);
+  if (bitDepth === 32) {
+    for (let i = 0; i < data.length; i++) out[i] = (data as Float32Array)[i];
+  } else {
+    for (let i = 0; i < data.length; i++) out[i] = (data as Uint8Array | Uint16Array)[i] / maxVal;
+  }
+  return out;
+}
+
+export async function parseTiff(buffer: ArrayBuffer): Promise<PointCloudData> {
+  const ifds = decodeTiff(buffer);
+  if (!ifds || ifds.length === 0) throw new Error("Invalid TIFF file");
+
+  const ifd = ifds[0] as any;
+  const width: number = ifd.width;
+  const height: number = ifd.height;
+  const pixelCount = width * height;
+  const bitsPerSample: number = ifd.bitsPerSample ?? 8;
+  const samplesPerPixel: number = ifd.samplesPerPixel ?? ifd.components ?? 1;
+  const sampleFormat: number = ifd.sampleFormat ?? 1;
+  const raw: ArrayLike<number> = ifd.data;
+
+  if (!raw) throw new Error("TIFF contains no pixel data");
+
+  const stride = samplesPerPixel;
+  const isFloat = sampleFormat === 3;
+  const maxVal = isFloat ? 1.0 : (1 << Math.min(bitsPerSample, 16)) - 1;
+
+  const positions = new Float32Array(pixelCount * 3);
+  const intensities = new Float32Array(pixelCount);
+
+  for (let i = 0; i < pixelCount; i++) {
+    const base = i * stride;
+    const r0 = (raw as Float32Array)[base] ?? 0;
+    const r1 = stride > 1 ? (raw as Float32Array)[base + 1] ?? 0 : 0;
+    const r2 = stride > 2 ? (raw as Float32Array)[base + 2] ?? 0 : 0;
+
+    const x = isFloat ? r0 : r0 / maxVal;
+    const y = isFloat ? r1 : r1 / maxVal;
+    const z = isFloat ? r2 : r2 / maxVal;
+
+    positions[i * 3] = x * width;
+    positions[i * 3 + 1] = y * height;
+    positions[i * 3 + 2] = z * width;
+    intensities[i] = (x + y + z) / 3;
+  }
+
+  return {
+    positions,
+    intensities,
+    pointCount: pixelCount,
+    boundingBox: buildBoundingBox(positions),
+    sourceInfo: { width, height, channels: samplesPerPixel, bitDepth: bitsPerSample },
+  };
+}
+
+export async function parsePng(buffer: ArrayBuffer): Promise<PointCloudData> {
+  const blob = new Blob([buffer]);
+  const bitmap = await createImageBitmap(blob);
+  const { width, height } = bitmap;
+  const pixelCount = width * height;
+
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const px = imageData.data;
+
+  const positions = new Float32Array(pixelCount * 3);
+  const intensities = new Float32Array(pixelCount);
+
+  const scaleX = width;
+  const scaleY = height;
+
+  for (let i = 0; i < pixelCount; i++) {
+    const r = px[i * 4] / 255;
+    const g = px[i * 4 + 1] / 255;
+    const b = px[i * 4 + 2] / 255;
+    positions[i * 3] = r * scaleX;
+    positions[i * 3 + 1] = g * scaleY;
+    positions[i * 3 + 2] = b * scaleX;
+    intensities[i] = (r + g + b) / 3;
+  }
+
+  return {
+    positions,
+    intensities,
+    pointCount: pixelCount,
+    boundingBox: buildBoundingBox(positions),
+    sourceInfo: { width, height, channels: 3, bitDepth: 8 },
+  };
+}
+
+export function parseBinary(buffer: ArrayBuffer): PointCloudData {
+  const floats = new Float32Array(buffer);
+  const pointCount = Math.floor(floats.length / 3);
+  const positions = floats.subarray(0, pointCount * 3);
+  const intensities = new Float32Array(pointCount).fill(1.0);
+  return {
+    positions: new Float32Array(positions),
+    intensities,
+    pointCount,
+    boundingBox: buildBoundingBox(new Float32Array(positions)),
+  };
 }
 
 export function parseCsv(text: string): PointCloudData {
   const lines = text.trim().split('\n');
   const positions: number[] = [];
   const intensities: number[] = [];
-  
+
   let startIdx = 0;
   if (lines.length > 0 && isNaN(parseFloat(lines[0].split(/[,\s]+/)[0]))) {
     startIdx = 1;
   }
-  
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
 
   for (let i = startIdx; i < lines.length; i++) {
     const parts = lines[i].trim().split(/[,\s]+/);
@@ -28,84 +153,69 @@ export function parseCsv(text: string): PointCloudData {
       const x = parseFloat(parts[0]);
       const y = parseFloat(parts[1]);
       const z = parseFloat(parts[2]);
-      
       if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
         positions.push(x, y, z);
-        
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        minZ = Math.min(minZ, z);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-        maxZ = Math.max(maxZ, z);
-        
-        if (parts.length >= 4) {
-          intensities.push(parseFloat(parts[3]));
-        } else {
-          intensities.push(1.0);
-        }
+        intensities.push(parts.length >= 4 ? parseFloat(parts[3]) : 1.0);
       }
     }
   }
 
-  const pointCount = positions.length / 3;
-
+  const posArr = new Float32Array(positions);
   return {
-    positions: new Float32Array(positions),
+    positions: posArr,
     intensities: new Float32Array(intensities),
-    pointCount,
-    boundingBox: {
-      min: [minX, minY, minZ],
-      max: [maxX, maxY, maxZ]
-    }
+    pointCount: positions.length / 3,
+    boundingBox: buildBoundingBox(posArr),
   };
+}
+
+export async function parseFile(file: File): Promise<PointCloudData> {
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+
+  if (ext === 'tif' || ext === 'tiff') {
+    const buf = await file.arrayBuffer();
+    return parseTiff(buf);
+  }
+
+  if (ext === 'png') {
+    const buf = await file.arrayBuffer();
+    return parsePng(buf);
+  }
+
+  if (ext === 'bin' || ext === 'raw' || ext === 'lmi') {
+    const buf = await file.arrayBuffer();
+    return parseBinary(buf);
+  }
+
+  const text = await file.text();
+  return parseCsv(text);
 }
 
 export function generateDemoCloud(): PointCloudData {
   const pointCount = 100000;
   const positions = new Float32Array(pointCount * 3);
   const intensities = new Float32Array(pointCount);
-  
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
 
   for (let i = 0; i < pointCount; i++) {
     const u = Math.random() * Math.PI * 2;
     const v = Math.random() * Math.PI * 2;
-    
-    const R = 10;
-    const r = 3;
-    
+    const R = 10, r = 3;
     let x = (R + r * Math.cos(v)) * Math.cos(u);
     let y = (R + r * Math.cos(v)) * Math.sin(u);
     let z = r * Math.sin(v) + Math.sin(u * 5) * 1.5;
-    
-    const noise = 0.2;
-    x += (Math.random() - 0.5) * noise;
-    y += (Math.random() - 0.5) * noise;
-    z += (Math.random() - 0.5) * noise;
-    
+    x += (Math.random() - 0.5) * 0.2;
+    y += (Math.random() - 0.5) * 0.2;
+    z += (Math.random() - 0.5) * 0.2;
     positions[i * 3] = x;
     positions[i * 3 + 1] = y;
     positions[i * 3 + 2] = z;
-    
     intensities[i] = Math.random();
-    
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    minZ = Math.min(minZ, z);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-    maxZ = Math.max(maxZ, z);
   }
 
   return {
     positions,
     intensities,
     pointCount,
-    boundingBox: {
-      min: [minX, minY, minZ],
-      max: [maxX, maxY, maxZ]
-    }
+    boundingBox: buildBoundingBox(positions),
   };
 }
