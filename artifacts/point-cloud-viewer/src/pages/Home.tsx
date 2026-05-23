@@ -28,6 +28,23 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [maxPoints, setMaxPoints] = useState<number>(500_000);
   const [heightRange, setHeightRange] = useState<[number, number] | null>(null);
+
+  // Compute robust [p5, p95] of Z so the default rainbow is not flattened by
+  // a handful of outlier pixels (very common with LMI depth scans).
+  const computeHeightDefault = useCallback((d: PointCloudData): [number, number] => {
+    const n = d.pointCount;
+    if (n === 0) return [0, 1];
+    // Sample at most 20k Z values for speed.
+    const stride = Math.max(1, Math.floor(n / 20_000));
+    const zs: number[] = [];
+    for (let i = 0; i < n; i += stride) zs.push(d.positions[i * 3 + 2]);
+    zs.sort((a, b) => a - b);
+    const lo = zs[Math.floor(zs.length * 0.05)] ?? d.boundingBox.min[2];
+    const hi = zs[Math.floor(zs.length * 0.95)] ?? d.boundingBox.max[2];
+    if (hi - lo < 1e-6) return [d.boundingBox.min[2], d.boundingBox.max[2]];
+    console.log("[height] p5/p95=", lo, hi, "data min/max=", d.boundingBox.min[2], d.boundingBox.max[2]);
+    return [lo, hi];
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const viewCtrlRef = useRef<ViewController | null>(null);
   const pendingFileRef = useRef<File | null>(null);
@@ -67,8 +84,7 @@ export default function Home() {
       const parsed = await parseFile(file, pts ?? maxPoints, setLoadingStage);
       setLoadingStage("Building point cloud…");
       setData(parsed);
-      // Initialize height range to the dataset's actual Z extent.
-      setHeightRange([parsed.boundingBox.min[2], parsed.boundingBox.max[2]]);
+      setHeightRange(computeHeightDefault(parsed));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Failed to parse file";
       const isOom = /memory|allocation|RangeError|too large/i.test(msg);
@@ -102,7 +118,7 @@ export default function Home() {
     const demo = generateDemoCloud();
     setData(demo);
     setFilename("demo_torus.bin");
-    setHeightRange([demo.boundingBox.min[2], demo.boundingBox.max[2]]);
+    setHeightRange(computeHeightDefault(demo));
     setError(null);
   };
 
