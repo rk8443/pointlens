@@ -41,53 +41,99 @@ function normalizeChannel(data: ArrayLike<number>, bitDepth: number): Float32Arr
 }
 
 export async function parseTiff(buffer: ArrayBuffer, maxPoints = 100_000): Promise<PointCloudData> {
-  const ifds = decodeTiff(buffer);
+  const ifds = decodeTiff(buffer) as any[];
   if (!ifds || ifds.length === 0) throw new Error("Invalid TIFF file");
 
-  const ifd = ifds[0] as any;
-  const width: number = ifd.width;
-  const height: number = ifd.height;
-  const bitsPerSample: number = ifd.bitsPerSample ?? 8;
-  const samplesPerPixel: number = ifd.samplesPerPixel ?? ifd.components ?? 1;
-  const sampleFormat: number = ifd.sampleFormat ?? 1;
-  const raw: ArrayLike<number> = ifd.data;
+  const ifd0 = ifds[0];
+  const width: number = ifd0.width;
+  const height: number = ifd0.height;
 
-  if (!raw) throw new Error("TIFF contains no pixel data");
+  // bitsPerSample can be a scalar or an array [32,32,32]
+  const bpsRaw = ifd0.bitsPerSample ?? 32;
+  const bitsPerSample: number = Array.isArray(bpsRaw) ? bpsRaw[0] : bpsRaw;
 
-  const step = Math.max(1, Math.ceil(Math.sqrt((width * height) / maxPoints)));
-  const cols = Math.ceil(width / step);
-  const rows = Math.ceil(height / step);
-  const maxOut = cols * rows;
-
-  const chStride = samplesPerPixel;
-  const isFloat = sampleFormat === 3;
+  const samplesPerPixel: number = ifd0.samplesPerPixel ?? ifd0.components ?? 1;
+  const sampleFormat: number = ifd0.sampleFormat ?? 1;
+  const isFloat = sampleFormat === 3 || bitsPerSample === 32;
   const maxVal = isFloat ? 1.0 : (1 << Math.min(bitsPerSample, 16)) - 1;
 
-  const positions = new Float32Array(maxOut * 3);
-  const intensities = new Float32Array(maxOut);
-  let pi = 0;
+  console.log('[parseTiff]', { width, height, bitsPerSample, samplesPerPixel, sampleFormat, isFloat, numIFDs: ifds.length });
 
-  for (let row = 0; row < height; row += step) {
-    for (let col = 0; col < width; col += step) {
-      const base = (row * width + col) * chStride;
-      const r0 = (raw as Float32Array)[base] ?? 0;
-      const r1 = chStride > 1 ? (raw as Float32Array)[base + 1] ?? 0 : 0;
-      const r2 = chStride > 2 ? (raw as Float32Array)[base + 2] ?? 0 : 0;
+  const step = Math.max(1, Math.ceil(Math.sqrt((width * height) / maxPoints)));
+  const maxOut = Math.ceil(height / step) * Math.ceil(width / step);
 
-      const x = isFloat ? r0 : r0 / maxVal;
-      const y = isFloat ? r1 : r1 / maxVal;
-      const z = isFloat ? r2 : r2 / maxVal;
+  let xs: Float32Array, ys: Float32Array, zs: Float32Array;
 
-      if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
-      if (x === 0 && y === 0 && z === 0) continue;
+  // --- PLANAR FORMAT: each channel is a separate IFD/page ---
+  if (ifds.length >= 3 && samplesPerPixel === 1) {
+    console.log('[parseTiff] planar layout — reading 3 separate IFDs');
+    const readChannel = (ifd: any): Float32Array => {
+      const raw = ifd.data as Float32Array;
+      const out = new Float32Array(Math.ceil(height / step) * Math.ceil(width / step));
+      let i = 0;
+      for (let r = 0; r < height; r += step) {
+        for (let c = 0; c < width; c += step) {
+          out[i++] = raw[r * width + c];
+        }
+      }
+      return out;
+    };
+    xs = readChannel(ifds[0]);
+    ys = readChannel(ifds[1]);
+    zs = readChannel(ifds[2]);
 
-      positions[pi * 3]     = isFloat ? x : x * width;
-      positions[pi * 3 + 1] = isFloat ? y : y * height;
-      positions[pi * 3 + 2] = isFloat ? z : z * width;
-      intensities[pi] = (Math.abs(x) + Math.abs(y) + Math.abs(z)) / 3;
-      pi++;
+  // --- INTERLEAVED FORMAT: all channels in one IFD ---
+  } else {
+    console.log('[parseTiff] interleaved layout — samplesPerPixel =', samplesPerPixel);
+    const raw = ifd0.data as Float32Array;
+    const ch = samplesPerPixel;
+    const n = Math.ceil(height / step) * Math.ceil(width / step);
+    xs = new Float32Array(n);
+    ys = new Float32Array(n);
+    zs = new Float32Array(n);
+    let i = 0;
+    for (let r = 0; r < height; r += step) {
+      for (let c = 0; c < width; c += step) {
+        const base = (r * width + c) * ch;
+        xs[i] = isFloat ? raw[base] : raw[base] / maxVal;
+        ys[i] = ch > 1 ? (isFloat ? raw[base + 1] : raw[base + 1] / maxVal) : 0;
+        zs[i] = ch > 2 ? (isFloat ? raw[base + 2] : raw[base + 2] / maxVal) : 0;
+        i++;
+      }
+    }
+    // If single-channel, use pixel coords for XY and the channel value as Z
+    if (ch === 1) {
+      let i2 = 0;
+      for (let r = 0; r < height; r += step) {
+        for (let c = 0; c < width; c += step) {
+          xs[i2] = c;
+          ys[i2] = r;
+          i2++;
+        }
+      }
     }
   }
+
+  console.log('[parseTiff] sample ranges X:', xs[0], '…', xs[xs.length - 1],
+    'Y:', ys[0], '…', ys[ys.length - 1],
+    'Z:', zs[0], '…', zs[zs.length - 1]);
+
+  // Build positions — only filter NaN/Inf, keep all finite points including zeros
+  const positions = new Float32Array(xs.length * 3);
+  const intensities = new Float32Array(xs.length);
+  let pi = 0;
+
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i], y = ys[i], z = zs[i];
+    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+    positions[pi * 3]     = x;
+    positions[pi * 3 + 1] = y;
+    positions[pi * 3 + 2] = z;
+    intensities[pi] = Math.abs(z);
+    pi++;
+  }
+
+  console.log('[parseTiff] valid points:', pi);
 
   const validPos = positions.slice(0, pi * 3);
   const validInt = intensities.slice(0, pi);
