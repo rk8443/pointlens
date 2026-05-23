@@ -30,6 +30,8 @@ export default function Home() {
   const [heightRange, setHeightRange] = useState<[number, number] | null>(null);
   const [clipOutliers, setClipOutliers] = useState<boolean>(true);
   const [heightMap, setHeightMap] = useState<"linear" | "equalized">("equalized");
+  const [fillGaps, setFillGaps] = useState<boolean>(false);
+  const [showSurface, setShowSurface] = useState<boolean>(false);
 
   // Compute robust [p5, p95] of Z so the default rainbow is not flattened by
   // a handful of outlier pixels (very common with LMI depth scans).
@@ -298,6 +300,39 @@ export default function Home() {
 
             {data && (
               <div className="space-y-2 pt-1">
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Surface</Label>
+                <label className={`flex items-center gap-2 select-none ${data.grid ? "cursor-pointer" : "opacity-40 cursor-not-allowed"}`}>
+                  <input
+                    type="checkbox"
+                    data-testid="checkbox-fill-gaps"
+                    checked={fillGaps && !!data.grid}
+                    disabled={!data.grid}
+                    onChange={(e) => setFillGaps(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  <span className="text-[11px] text-foreground">Fill empty data</span>
+                </label>
+                <label className={`flex items-center gap-2 select-none ${data.grid ? "cursor-pointer" : "opacity-40 cursor-not-allowed"}`}>
+                  <input
+                    type="checkbox"
+                    data-testid="checkbox-show-surface"
+                    checked={showSurface && !!data.grid}
+                    disabled={!data.grid}
+                    onChange={(e) => setShowSurface(e.target.checked)}
+                    className="h-3.5 w-3.5 accent-primary"
+                  />
+                  <span className="text-[11px] text-foreground">Surface mesh</span>
+                </label>
+                <p className="text-[10px] text-muted-foreground leading-tight">
+                  {data.grid
+                    ? "Fill interpolates missing pixels. Surface renders a shaded triangulated mesh instead of points."
+                    : "Surface options require a raster TIF scan."}
+                </p>
+              </div>
+            )}
+
+            {data && (
+              <div className="space-y-2 pt-1">
                 <Label className="text-sm">View</Label>
                 <div className="grid grid-cols-3 gap-1">
                   {([
@@ -419,6 +454,8 @@ export default function Home() {
               heightRange={heightRange ?? undefined}
               clipEnabled={clipOutliers}
               heightMap={heightMap}
+              fillGaps={fillGaps}
+              showSurface={showSurface}
               onReady={onCanvasReady}
             />
             <ColorLegend data={data} mode={colorMode} heightRange={heightRange ?? undefined} />

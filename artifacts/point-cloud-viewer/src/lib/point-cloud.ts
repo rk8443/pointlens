@@ -15,6 +15,17 @@ export interface PointCloudData {
     channels?: number;
     bitDepth?: number;
   };
+  // Regularly-sampled raster grid (only set for raster sources like TIF/PNG).
+  // Needed for "fill empty" gap-filling and "surface mesh" triangulation.
+  grid?: {
+    cols: number;
+    rows: number;
+    z: Float32Array; // length = cols*rows, NaN marks invalid cells (row-major)
+    xOrigin: number; // world X of column 0
+    yOrigin: number; // world Y of row 0
+    xStep: number; // world units per grid column
+    yStep: number; // world units per grid row
+  };
 }
 
 function buildBoundingBox(positions: Float32Array): PointCloudData["boundingBox"] {
@@ -162,12 +173,54 @@ export async function parseTiff(buffer: ArrayBuffer, maxPoints = 100_000): Promi
   const validPos = positions.slice(0, pi * 3);
   const validInt = intensities.slice(0, pi);
 
+  // Build the regular raster grid (cols × rows in stepped coords).
+  // The XS/YS arrays were filled row-major above, so reshape them.
+  const cols = Math.ceil(width / step);
+  const rows = Math.ceil(height / step);
+  const gridZ = new Float32Array(cols * rows);
+  let xStep = 1;
+  let yStep = 1;
+  let xOrigin = 0;
+  let yOrigin = 0;
+  if (xs.length === cols * rows) {
+    for (let k = 0; k < xs.length; k++) {
+      const z = zs[k];
+      gridZ[k] = isFinite(z) && isFinite(xs[k]) && isFinite(ys[k]) ? z : NaN;
+    }
+    // Use the first finite XY as the origin so calibrated-XYZ TIFFs keep their
+    // real-world offset when reconstructed for fill/mesh modes.
+    for (let k = 0; k < xs.length; k++) {
+      if (isFinite(xs[k]) && isFinite(ys[k])) {
+        xOrigin = xs[k] - (k % cols) * 1; // pre-step assumption; refined below
+        yOrigin = ys[k] - Math.floor(k / cols) * 1;
+        break;
+      }
+    }
+    // Derive XY step from the first row / first column of finite samples.
+    for (let k = 1; k < cols; k++) {
+      if (isFinite(xs[k]) && isFinite(xs[0])) { xStep = Math.abs(xs[k] - xs[0]) / k || 1; break; }
+    }
+    for (let k = 1; k < rows; k++) {
+      const idx = k * cols;
+      if (isFinite(ys[idx]) && isFinite(ys[0])) { yStep = Math.abs(ys[idx] - ys[0]) / k || 1; break; }
+    }
+    // Recompute origin with the derived step.
+    for (let k = 0; k < xs.length; k++) {
+      if (isFinite(xs[k]) && isFinite(ys[k])) {
+        xOrigin = xs[k] - (k % cols) * xStep;
+        yOrigin = ys[k] - Math.floor(k / cols) * yStep;
+        break;
+      }
+    }
+  }
+
   return {
     positions: validPos,
     intensities: validInt,
     pointCount: pi,
     boundingBox: buildBoundingBox(validPos),
     sourceInfo: { width, height, channels: samplesPerPixel, bitDepth: bitsPerSample },
+    grid: xs.length === cols * rows ? { cols, rows, z: gridZ, xOrigin, yOrigin, xStep, yStep } : undefined,
   };
 }
 
