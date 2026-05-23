@@ -4,6 +4,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { ViewportGizmo } from "three-viewport-gizmo";
 import { PointCloudData } from "../lib/point-cloud";
 import {
+  markOutliers,
   fillGridGaps,
   smoothGrid,
   buildSurfaceMesh,
@@ -139,7 +140,10 @@ export function PointCloudCanvas({
     if (!data.grid || (!fillGaps && !showSurface && sp === 0)) {
       return { workData: data, meshBuffers: null };
     }
-    let zArr = fillGaps ? fillGridGaps(data.grid) : data.grid.z;
+    // Reject saturated-sensor outliers before any neighbor-aware op so they
+    // don't leak into fill/smooth/mesh as ghost height.
+    let zArr = markOutliers(data.grid.z, 6);
+    if (fillGaps) zArr = fillGridGaps(data.grid, zArr);
     if (sp > 0) zArr = smoothGrid(data.grid, zArr, sp);
     if (showSurface) {
       const buffers = buildSurfaceMesh(data.grid, zArr);

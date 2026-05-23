@@ -1,5 +1,56 @@
 import type { PointCloudData } from "./point-cloud";
 
+// Robust outlier rejection. Returns a copy of zArray with cells whose value
+// is more than `sigmaFactor` robust standard deviations from the median set
+// to NaN. Catches saturated LMI sensor pixels (huge spikes that aren't
+// already 0) so they don't leak into fill/smooth/mesh as ghost geometry.
+export function markOutliers(
+  zArray: Float32Array,
+  sigmaFactor = 6,
+): Float32Array {
+  const total = zArray.length;
+  const target = 4000;
+  const stride = Math.max(1, Math.floor(total / target));
+  const samples: number[] = [];
+  for (let i = 0; i < total; i += stride) {
+    const v = zArray[i];
+    if (isFinite(v)) samples.push(v);
+  }
+  if (samples.length < 20) return zArray;
+  samples.sort((a, b) => a - b);
+  const median = samples[samples.length >>> 1];
+  const devs = new Float64Array(samples.length);
+  for (let i = 0; i < samples.length; i++) devs[i] = Math.abs(samples[i] - median);
+  const devArr = Array.from(devs);
+  devArr.sort((a, b) => a - b);
+  const mad = devArr[devArr.length >>> 1];
+  if (!isFinite(mad)) return zArray;
+  let sigma = mad * 1.4826; // MAD -> approx. stddev for normal data
+  // Flat/quantized scans collapse MAD to 0. Fall back to the smallest
+  // non-zero deviation (or, failing that, the 95th-percentile deviation)
+  // so a single saturated outlier still gets caught.
+  if (sigma === 0) {
+    let firstNonZero = 0;
+    for (let i = 0; i < devArr.length; i++) {
+      if (devArr[i] > 0) { firstNonZero = devArr[i]; break; }
+    }
+    if (firstNonZero === 0) {
+      const p95 = devArr[Math.min(devArr.length - 1, Math.floor(devArr.length * 0.95))];
+      firstNonZero = p95;
+    }
+    if (firstNonZero === 0) return zArray; // truly all identical -> nothing to do
+    sigma = firstNonZero;
+  }
+  const low = median - sigmaFactor * sigma;
+  const high = median + sigmaFactor * sigma;
+  const out = new Float32Array(zArray);
+  for (let i = 0; i < total; i++) {
+    const v = out[i];
+    if (isFinite(v) && (v < low || v > high)) out[i] = NaN;
+  }
+  return out;
+}
+
 // Fill NaN cells in a row-major grid by iteratively averaging their finite
 // 4-neighbors. Returns a new array; the input is not mutated. Uses true
 // ping-pong buffers to avoid per-pass allocations.
@@ -9,11 +60,12 @@ import type { PointCloudData } from "./point-cloud";
 // into bigger gaps, which can create ghost geometry, so keep this conservative.
 export function fillGridGaps(
   grid: NonNullable<PointCloudData["grid"]>,
+  zArray: Float32Array = grid.z,
   iterations = 1,
 ): Float32Array {
-  const { cols, rows, z } = grid;
-  let cur = new Float32Array(z);
-  let next = new Float32Array(z); // start as a copy too, so valid cells are present from pass 1
+  const { cols, rows } = grid;
+  let cur = new Float32Array(zArray);
+  let next = new Float32Array(zArray); // start as a copy too, so valid cells are present from pass 1
 
   for (let pass = 0; pass < iterations; pass++) {
     let filled = 0;
