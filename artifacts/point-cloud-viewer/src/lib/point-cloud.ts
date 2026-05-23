@@ -85,30 +85,54 @@ export async function parseTiff(buffer: ArrayBuffer, maxPoints = 100_000): Promi
   // --- INTERLEAVED FORMAT: all channels in one IFD ---
   } else {
     console.log('[parseTiff] interleaved layout — samplesPerPixel =', samplesPerPixel);
-    const raw = ifd0.data as Float32Array;
+    const raw = ifd0.data as ArrayLike<number>;
     const ch = samplesPerPixel;
     const n = Math.ceil(height / step) * Math.ceil(width / step);
     xs = new Float32Array(n);
     ys = new Float32Array(n);
     zs = new Float32Array(n);
     let i = 0;
-    for (let r = 0; r < height; r += step) {
-      for (let c = 0; c < width; c += step) {
-        const base = (r * width + c) * ch;
-        xs[i] = isFloat ? raw[base] : raw[base] / maxVal;
-        ys[i] = ch > 1 ? (isFloat ? raw[base + 1] : raw[base + 1] / maxVal) : 0;
-        zs[i] = ch > 2 ? (isFloat ? raw[base + 2] : raw[base + 2] / maxVal) : 0;
-        i++;
-      }
-    }
-    // If single-channel, use pixel coords for XY and the channel value as Z
-    if (ch === 1) {
-      let i2 = 0;
+
+    if (isFloat && ch >= 3) {
+      // Float32 3-channel: actual XYZ mm coordinates from LMI calibrated scan
       for (let r = 0; r < height; r += step) {
         for (let c = 0; c < width; c += step) {
-          xs[i2] = c;
-          ys[i2] = r;
-          i2++;
+          const base = (r * width + c) * ch;
+          xs[i] = raw[base];
+          ys[i] = raw[base + 1];
+          zs[i] = raw[base + 2];
+          i++;
+        }
+      }
+    } else {
+      // uint8/16 (and float single-ch): LMI range-image format.
+      // X = column, Y = row, Z = max value across channels (typically the depth channel).
+      // 0 is the LMI "no-data" marker, so skip it.
+      const yScale = width / height; // make Y roughly proportional to X scale for very tall scans
+      for (let r = 0; r < height; r += step) {
+        for (let c = 0; c < width; c += step) {
+          const base = (r * width + c) * ch;
+          let z = raw[base] ?? 0;
+          if (ch > 1) {
+            const v1 = raw[base + 1] ?? 0;
+            if (Math.abs(v1) > Math.abs(z)) z = v1;
+          }
+          if (ch > 2) {
+            const v2 = raw[base + 2] ?? 0;
+            if (Math.abs(v2) > Math.abs(z)) z = v2;
+          }
+          xs[i] = c;
+          ys[i] = r * yScale; // visually balance very tall scans (e.g. 5k × 24k)
+          // Scale Z so it's visible at the same order of magnitude as X/Y.
+          // For uint16 [0..65535] divided by 65535 then multiplied by max(width, height)/4
+          // gives a reasonable z-range.
+          const zNorm = isFloat ? z : z / maxVal;
+          zs[i] = zNorm * (width / 4);
+          if (z === 0) {
+            // Mark as NaN so the filter below removes it
+            xs[i] = NaN; ys[i] = NaN; zs[i] = NaN;
+          }
+          i++;
         }
       }
     }
