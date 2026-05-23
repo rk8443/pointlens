@@ -107,10 +107,24 @@ export async function parseTiff(buffer: ArrayBuffer, maxPoints = 100_000): Promi
     } else {
       // uint8/16 (and float single-ch): LMI range-image format.
       // X = column, Y = row (TRUE pixel coords, no squishing — preserves aspect).
-      // Z = the LAST channel for 3-channel files (LMI Gocator convention puts
-      // depth in channel index 2). Single-channel files use channel 0.
-      // 0 is the LMI "no-data" marker for height, so skip it.
-      const zChan = ch >= 3 ? 2 : 0;
+      // Auto-detect the depth channel: pick whichever channel has the most
+      // non-zero samples in a quick scan of the image. Different LMI exports
+      // store depth in different channels (sometimes 0, sometimes 2).
+      let zChan = 0;
+      if (ch > 1) {
+        const scanCount = Math.min(20000, width * height);
+        const scanStride = Math.max(1, Math.floor((width * height) / scanCount));
+        const nonZero = new Array(ch).fill(0);
+        for (let p = 0; p < width * height; p += scanStride) {
+          for (let k = 0; k < ch; k++) {
+            if ((raw[p * ch + k] ?? 0) !== 0) nonZero[k]++;
+          }
+        }
+        let best = 0;
+        for (let k = 1; k < ch; k++) if (nonZero[k] > nonZero[best]) best = k;
+        zChan = best;
+        console.log('[parseTiff] non-zero counts per channel:', nonZero, '→ picked Z channel', zChan);
+      }
       // Match Z's display range to ~20% of the larger surface dimension. That
       // keeps height visible without exaggerating it the way `width/4` did.
       const zVisualScale = Math.max(width, height) / 5;
