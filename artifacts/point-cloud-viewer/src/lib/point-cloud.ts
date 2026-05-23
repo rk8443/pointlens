@@ -169,17 +169,40 @@ export function parseCsv(text: string): PointCloudData {
   };
 }
 
+const MAGIC = 0x504c4300;
+
+export async function parseFromServer(file: File): Promise<PointCloudData> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/pc-api/upload", { method: "POST", body: form });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail ?? `Server error ${res.status}`);
+  }
+  const buf = await res.arrayBuffer();
+  // Parse binary header: 7 x int32
+  const header = new Int32Array(buf, 0, 7);
+  if (header[0] !== MAGIC) throw new Error("Invalid response from server");
+  const pointCount = header[1];
+  const width = header[2];
+  const height = header[3];
+  const channels = header[4];
+  const bitDepth = header[5];
+  const positions = new Float32Array(buf, 28, pointCount * 3);
+  const posArr = new Float32Array(positions); // copy out of buffer
+  return {
+    positions: posArr,
+    pointCount,
+    boundingBox: buildBoundingBox(posArr),
+    sourceInfo: { width, height, channels, bitDepth },
+  };
+}
+
 export async function parseFile(file: File): Promise<PointCloudData> {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
 
-  if (ext === 'tif' || ext === 'tiff') {
-    const buf = await file.arrayBuffer();
-    return parseTiff(buf);
-  }
-
-  if (ext === 'png') {
-    const buf = await file.arrayBuffer();
-    return parsePng(buf);
+  if (ext === 'tif' || ext === 'tiff' || ext === 'png') {
+    return parseFromServer(file);
   }
 
   if (ext === 'bin' || ext === 'raw' || ext === 'lmi') {

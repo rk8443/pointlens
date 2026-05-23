@@ -1,0 +1,27 @@
+kind = "api"
+previewPath = "/pc-api"
+title = "Point Cloud Processor"
+version = "1.0.0"
+id = "pc-processor"
+
+[[services]]
+localPort = 7891
+name = "Point Cloud Processor"
+paths = ["/pc-api"]
+
+[services.development]
+run = "python main.py"
+
+[services.production]
+
+[services.production.build]
+args = ["echo", "no-build"]
+
+[services.production.run]
+args = ["python", "main.py"]
+
+[services.production.run.env]
+PORT = "7891"
+
+[services.production.health.startup]
+path = "/pc-api/healthz"
