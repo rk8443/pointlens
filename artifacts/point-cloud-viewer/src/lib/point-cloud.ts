@@ -106,30 +106,24 @@ export async function parseTiff(buffer: ArrayBuffer, maxPoints = 100_000): Promi
       }
     } else {
       // uint8/16 (and float single-ch): LMI range-image format.
-      // X = column, Y = row, Z = max value across channels (typically the depth channel).
-      // 0 is the LMI "no-data" marker, so skip it.
-      const yScale = width / height; // make Y roughly proportional to X scale for very tall scans
+      // X = column, Y = row (TRUE pixel coords, no squishing — preserves aspect).
+      // Z = the LAST channel for 3-channel files (LMI Gocator convention puts
+      // depth in channel index 2). Single-channel files use channel 0.
+      // 0 is the LMI "no-data" marker for height, so skip it.
+      const zChan = ch >= 3 ? 2 : 0;
+      // Match Z's display range to ~20% of the larger surface dimension. That
+      // keeps height visible without exaggerating it the way `width/4` did.
+      const zVisualScale = Math.max(width, height) / 5;
       for (let r = 0; r < height; r += step) {
         for (let c = 0; c < width; c += step) {
           const base = (r * width + c) * ch;
-          let z = raw[base] ?? 0;
-          if (ch > 1) {
-            const v1 = raw[base + 1] ?? 0;
-            if (Math.abs(v1) > Math.abs(z)) z = v1;
-          }
-          if (ch > 2) {
-            const v2 = raw[base + 2] ?? 0;
-            if (Math.abs(v2) > Math.abs(z)) z = v2;
-          }
+          const z = raw[base + zChan] ?? 0;
           xs[i] = c;
-          ys[i] = r * yScale; // visually balance very tall scans (e.g. 5k × 24k)
-          // Scale Z so it's visible at the same order of magnitude as X/Y.
-          // For uint16 [0..65535] divided by 65535 then multiplied by max(width, height)/4
-          // gives a reasonable z-range.
+          ys[i] = r;
           const zNorm = isFloat ? z : z / maxVal;
-          zs[i] = zNorm * (width / 4);
+          zs[i] = zNorm * zVisualScale;
           if (z === 0) {
-            // Mark as NaN so the filter below removes it
+            // No-data pixel — mark for filter below
             xs[i] = NaN; ys[i] = NaN; zs[i] = NaN;
           }
           i++;
