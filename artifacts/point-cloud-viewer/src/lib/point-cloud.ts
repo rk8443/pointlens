@@ -40,14 +40,13 @@ function normalizeChannel(data: ArrayLike<number>, bitDepth: number): Float32Arr
   return out;
 }
 
-export async function parseTiff(buffer: ArrayBuffer): Promise<PointCloudData> {
+export async function parseTiff(buffer: ArrayBuffer, maxPoints = 100_000): Promise<PointCloudData> {
   const ifds = decodeTiff(buffer);
   if (!ifds || ifds.length === 0) throw new Error("Invalid TIFF file");
 
   const ifd = ifds[0] as any;
   const width: number = ifd.width;
   const height: number = ifd.height;
-  const pixelCount = width * height;
   const bitsPerSample: number = ifd.bitsPerSample ?? 8;
   const samplesPerPixel: number = ifd.samplesPerPixel ?? ifd.components ?? 1;
   const sampleFormat: number = ifd.sampleFormat ?? 1;
@@ -55,34 +54,49 @@ export async function parseTiff(buffer: ArrayBuffer): Promise<PointCloudData> {
 
   if (!raw) throw new Error("TIFF contains no pixel data");
 
-  const stride = samplesPerPixel;
+  const step = Math.max(1, Math.ceil(Math.sqrt((width * height) / maxPoints)));
+  const cols = Math.ceil(width / step);
+  const rows = Math.ceil(height / step);
+  const maxOut = cols * rows;
+
+  const chStride = samplesPerPixel;
   const isFloat = sampleFormat === 3;
   const maxVal = isFloat ? 1.0 : (1 << Math.min(bitsPerSample, 16)) - 1;
 
-  const positions = new Float32Array(pixelCount * 3);
-  const intensities = new Float32Array(pixelCount);
+  const positions = new Float32Array(maxOut * 3);
+  const intensities = new Float32Array(maxOut);
+  let pi = 0;
 
-  for (let i = 0; i < pixelCount; i++) {
-    const base = i * stride;
-    const r0 = (raw as Float32Array)[base] ?? 0;
-    const r1 = stride > 1 ? (raw as Float32Array)[base + 1] ?? 0 : 0;
-    const r2 = stride > 2 ? (raw as Float32Array)[base + 2] ?? 0 : 0;
+  for (let row = 0; row < height; row += step) {
+    for (let col = 0; col < width; col += step) {
+      const base = (row * width + col) * chStride;
+      const r0 = (raw as Float32Array)[base] ?? 0;
+      const r1 = chStride > 1 ? (raw as Float32Array)[base + 1] ?? 0 : 0;
+      const r2 = chStride > 2 ? (raw as Float32Array)[base + 2] ?? 0 : 0;
 
-    const x = isFloat ? r0 : r0 / maxVal;
-    const y = isFloat ? r1 : r1 / maxVal;
-    const z = isFloat ? r2 : r2 / maxVal;
+      const x = isFloat ? r0 : r0 / maxVal;
+      const y = isFloat ? r1 : r1 / maxVal;
+      const z = isFloat ? r2 : r2 / maxVal;
 
-    positions[i * 3] = x * width;
-    positions[i * 3 + 1] = y * height;
-    positions[i * 3 + 2] = z * width;
-    intensities[i] = (x + y + z) / 3;
+      if (!isFinite(x) || !isFinite(y) || !isFinite(z)) continue;
+      if (x === 0 && y === 0 && z === 0) continue;
+
+      positions[pi * 3]     = isFloat ? x : x * width;
+      positions[pi * 3 + 1] = isFloat ? y : y * height;
+      positions[pi * 3 + 2] = isFloat ? z : z * width;
+      intensities[pi] = (Math.abs(x) + Math.abs(y) + Math.abs(z)) / 3;
+      pi++;
+    }
   }
 
+  const validPos = positions.slice(0, pi * 3);
+  const validInt = intensities.slice(0, pi);
+
   return {
-    positions,
-    intensities,
-    pointCount: pixelCount,
-    boundingBox: buildBoundingBox(positions),
+    positions: validPos,
+    intensities: validInt,
+    pointCount: pi,
+    boundingBox: buildBoundingBox(validPos),
     sourceInfo: { width, height, channels: samplesPerPixel, bitDepth: bitsPerSample },
   };
 }
@@ -232,15 +246,34 @@ export async function parseFile(
 ): Promise<PointCloudData> {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
 
-  if (ext === 'tif' || ext === 'tiff' || ext === 'png') {
-    return parseFromServer(file, maxPoints, onStage);
+  if (ext === 'tif' || ext === 'tiff') {
+    onStage?.('Reading file…');
+    const buf = await file.arrayBuffer();
+    onStage?.('Decoding TIFF…');
+    try {
+      return await parseTiff(buf, maxPoints);
+    } catch (clientErr) {
+      // If the tiff library can't handle this format, fall back to server
+      console.warn('Client-side TIFF parse failed, trying server:', clientErr);
+      onStage?.('Falling back to server…');
+      return parseFromServer(file, maxPoints, onStage);
+    }
+  }
+
+  if (ext === 'png') {
+    onStage?.('Reading image…');
+    const buf = await file.arrayBuffer();
+    onStage?.('Decoding PNG…');
+    return parsePng(buf);
   }
 
   if (ext === 'bin' || ext === 'raw' || ext === 'lmi') {
+    onStage?.('Reading file…');
     const buf = await file.arrayBuffer();
     return parseBinary(buf);
   }
 
+  onStage?.('Parsing text data…');
   const text = await file.text();
   return parseCsv(text);
 }
