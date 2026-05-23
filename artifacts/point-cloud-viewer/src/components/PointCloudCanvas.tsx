@@ -1,16 +1,8 @@
-import { useRef, useEffect, useMemo } from "react";
+import { useRef, useEffect } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { ViewportGizmo } from "three-viewport-gizmo";
 import { PointCloudData } from "../lib/point-cloud";
-import {
-  markOutliers,
-  smoothGrid,
-  buildSurfaceMesh,
-  meshAsPointCloudData,
-  gridToFilledPoints,
-  SurfaceMeshBuffers,
-} from "../lib/surface";
 
 export type ViewPreset = "iso" | "front" | "back" | "left" | "right" | "top" | "bottom";
 
@@ -26,8 +18,6 @@ interface PointCloudCanvasProps {
   heightRange?: [number, number]; // [zMin, zMax] world-space for height coloring
   clipEnabled?: boolean; // when true, hide points whose Z is outside heightRange
   heightMap?: "linear" | "equalized"; // how to map Z within heightRange to a hue
-  showSurface?: boolean; // render as triangulated surface mesh instead of points
-  smoothPasses?: number; // 3x3 box-blur passes applied to grid Z before meshing
   onReady?: (ctrl: ViewController) => void;
 }
 
@@ -101,53 +91,18 @@ function buildColors(
   return colors;
 }
 
-export function PointCloudCanvas({
-  data,
-  pointSize,
-  colorMode,
-  heightRange,
-  clipEnabled,
-  heightMap,
-  showSurface,
-  smoothPasses,
-  onReady,
-}: PointCloudCanvasProps) {
+export function PointCloudCanvas({ data, pointSize, colorMode, heightRange, clipEnabled, heightMap, onReady }: PointCloudCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const gizmoRef = useRef<ViewportGizmo | null>(null);
-  // Currently-attached scene object — Points or Mesh depending on showSurface.
-  const sceneObjRef = useRef<THREE.Object3D | null>(null);
+  const pointsRef = useRef<THREE.Points | null>(null);
   const centerZRef = useRef<number>(0); // world-Z offset applied to geometry on load
   const clipUniformRef = useRef<{ value: THREE.Vector2 } | null>(null);
   const frameRef = useRef<number>(0);
   const mountedRef = useRef(false);
-
-  // Derive a working PointCloudData based on fill/surface toggles. When the
-  // dataset has no grid (CSV/BIN/PNG), the toggles are no-ops and we fall back
-  // to the raw point cloud.
-  const { workData, meshBuffers } = useMemo<{
-    workData: PointCloudData | null;
-    meshBuffers: SurfaceMeshBuffers | null;
-  }>(() => {
-    if (!data) return { workData: null, meshBuffers: null };
-    const sp = smoothPasses ?? 0;
-    // CSV/XYZ/BIN have no grid -> pass through unchanged.
-    if (!data.grid) return { workData: data, meshBuffers: null };
-    // Always reject saturated-sensor outliers on grid scans, even with the
-    // surface mesh off. Otherwise toggling Surface off would make ghost spikes
-    // reappear as points. Only measured pixels are ever rendered; nothing is
-    // interpolated, and missing cells stay missing.
-    const zClean = markOutliers(data.grid.z, 6);
-    const zArr = sp > 0 ? smoothGrid(data.grid, zClean, sp) : zClean;
-    if (showSurface) {
-      const buffers = buildSurfaceMesh(data.grid, zArr);
-      return { workData: meshAsPointCloudData(buffers, data), meshBuffers: buffers };
-    }
-    return { workData: gridToFilledPoints(data.grid, zArr, data), meshBuffers: null };
-  }, [data, showSurface, smoothPasses]);
 
   // -------- view controller helpers (stable refs used by buttons) --------
   const fitView = useRef<() => void>(() => {});
@@ -182,16 +137,6 @@ export function PointCloudCanvas({
     const axesHelper = new THREE.AxesHelper(5);
     scene.add(axesHelper);
 
-    // Lights for the surface-mesh path. Points are unlit so these are no-ops
-    // there.
-    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
-    keyLight.position.set(1, -1, 1).normalize();
-    scene.add(keyLight);
-    const fillLight = new THREE.DirectionalLight(0xb6ccff, 0.35);
-    fillLight.position.set(-1, 1, 0.3).normalize();
-    scene.add(fillLight);
-
     // SolidWorks-style view gizmo in the bottom-right corner.
     const gizmo = new ViewportGizmo(camera, renderer, {
       type: "cube",
@@ -206,12 +151,8 @@ export function PointCloudCanvas({
     gizmoRef.current = gizmo;
 
     // ---- view controller implementations ----
-    const currentGeo = (): THREE.BufferGeometry | undefined => {
-      const obj = sceneObjRef.current as (THREE.Points | THREE.Mesh) | null;
-      return obj?.geometry as THREE.BufferGeometry | undefined;
-    };
     fitView.current = () => {
-      const geo = currentGeo();
+      const geo = pointsRef.current?.geometry as THREE.BufferGeometry | undefined;
       if (!geo || !geo.boundingSphere) return;
       const radius = geo.boundingSphere.radius || 20;
       const fov = (camera.fov * Math.PI) / 180;
@@ -228,7 +169,7 @@ export function PointCloudCanvas({
     };
 
     setView.current = (preset: ViewPreset) => {
-      const geo = currentGeo();
+      const geo = pointsRef.current?.geometry as THREE.BufferGeometry | undefined;
       const radius = (geo?.boundingSphere?.radius ?? 0) > 0 ? geo!.boundingSphere!.radius : 20;
       const fov = (camera.fov * Math.PI) / 180;
       const dist = (radius / Math.sin(fov / 2)) * 1.05;
@@ -281,91 +222,69 @@ export function PointCloudCanvas({
     };
   }, []);
 
-  // Rebuild geometry when the (possibly transformed) dataset or mode changes.
+  // Rebuild geometry only when the dataset changes.
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
 
-    if (sceneObjRef.current) {
-      const obj = sceneObjRef.current as THREE.Points | THREE.Mesh;
-      (obj.geometry as THREE.BufferGeometry).dispose();
-      (obj.material as THREE.Material).dispose();
-      scene.remove(obj);
-      sceneObjRef.current = null;
+    if (pointsRef.current) {
+      (pointsRef.current.geometry as THREE.BufferGeometry).dispose();
+      ((pointsRef.current.material) as THREE.PointsMaterial).dispose();
+      scene.remove(pointsRef.current);
+      pointsRef.current = null;
     }
 
-    if (!workData) return;
+    if (!data) return;
 
     // IMPORTANT: copy positions for the GPU before centering so the source
-    // positions stay in WORLD coords. Other code paths (buildColors,
+    // `data.positions` stays in WORLD coords. Other code paths (buildColors,
     // height-range slider, clip uniform) compare against world-space Z and
-    // would silently break if positions were mutated in place.
-    const centered = new Float32Array(workData.positions);
+    // would silently break if data.positions were mutated in place.
+    const centered = new Float32Array(data.positions);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(centered, 3));
-    const colors = buildColors(workData, colorMode, heightRange, heightMap);
+    const colors = buildColors(data, colorMode, heightRange, heightMap);
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    if (meshBuffers) {
-      geo.setIndex(new THREE.BufferAttribute(meshBuffers.indices, 1));
-    }
     geo.computeBoundingBox();
     const center = new THREE.Vector3();
     geo.boundingBox!.getCenter(center);
     geo.translate(-center.x, -center.y, -center.z); // only mutates `centered`
-    if (meshBuffers) geo.computeVertexNormals();
     geo.computeBoundingSphere();
     centerZRef.current = center.z;
 
-    // Inject a GPU-side Z-range clip. The geometry is in centered space; we
-    // discard fragments whose Z is outside [uClipZ.x, .y]. The same shader
-    // patch works for PointsMaterial and MeshStandardMaterial since both go
-    // through the standard chunk includes.
+    // Inject a GPU-side Z-range clip into PointsMaterial. The geometry is in
+    // centered space; we discard fragments whose Z is outside [uClipZ.x, .y].
+    // When clipping is disabled the parent sets a very wide range.
     const clipUniform = { value: new THREE.Vector2(-1e9, 1e9) };
     clipUniformRef.current = clipUniform;
-    const patchShader = (mat: THREE.Material) => {
-      mat.onBeforeCompile = (shader) => {
-        shader.uniforms.uClipZ = clipUniform;
-        shader.vertexShader = shader.vertexShader
-          .replace("#include <common>", "#include <common>\nvarying float vZ;")
-          .replace("#include <begin_vertex>", "#include <begin_vertex>\nvZ = position.z;");
-        shader.fragmentShader = shader.fragmentShader
-          .replace(
-            "#include <common>",
-            "#include <common>\nuniform vec2 uClipZ;\nvarying float vZ;",
-          )
-          .replace(
-            "#include <clipping_planes_fragment>",
-            "if (vZ < uClipZ.x || vZ > uClipZ.y) discard;\n#include <clipping_planes_fragment>",
-          );
-      };
+    const mat = new THREE.PointsMaterial({
+      size: pointSize,
+      vertexColors: true,
+      sizeAttenuation: false,
+    });
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uClipZ = clipUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying float vZ;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvZ = position.z;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nuniform vec2 uClipZ;\nvarying float vZ;",
+        )
+        .replace(
+          "#include <clipping_planes_fragment>",
+          "if (vZ < uClipZ.x || vZ > uClipZ.y) discard;\n#include <clipping_planes_fragment>",
+        );
     };
 
-    let obj: THREE.Object3D;
-    if (meshBuffers) {
-      const mat = new THREE.MeshStandardMaterial({
-        vertexColors: true,
-        side: THREE.DoubleSide,
-        flatShading: false,
-        roughness: 0.85,
-        metalness: 0.05,
-      });
-      patchShader(mat);
-      obj = new THREE.Mesh(geo, mat);
-    } else {
-      const mat = new THREE.PointsMaterial({
-        size: pointSize,
-        vertexColors: true,
-        sizeAttenuation: false,
-      });
-      patchShader(mat);
-      obj = new THREE.Points(geo, mat);
-    }
-    scene.add(obj);
-    sceneObjRef.current = obj;
+    const points = new THREE.Points(geo, mat);
+    scene.add(points);
+    pointsRef.current = points;
 
     fitView.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workData, meshBuffers]);
+  }, [data]);
 
   // Update the GPU clip range whenever the slider or toggle changes.
   useEffect(() => {
@@ -377,22 +296,21 @@ export function PointCloudCanvas({
     } else {
       u.value.set(-1e9, 1e9);
     }
-  }, [clipEnabled, heightRange?.[0], heightRange?.[1], workData]);
+  }, [clipEnabled, heightRange?.[0], heightRange?.[1], data]);
 
   // Re-color in place when color mode or height range changes (no re-fit).
   useEffect(() => {
-    const obj = sceneObjRef.current as (THREE.Points | THREE.Mesh) | null;
-    if (!obj || !workData) return;
-    const colors = buildColors(workData, colorMode, heightRange, heightMap);
-    const attr = (obj.geometry as THREE.BufferGeometry).getAttribute("color") as THREE.BufferAttribute;
+    const points = pointsRef.current;
+    if (!points || !data) return;
+    const colors = buildColors(data, colorMode, heightRange, heightMap);
+    const attr = (points.geometry as THREE.BufferGeometry).getAttribute("color") as THREE.BufferAttribute;
     attr.array.set(colors);
     attr.needsUpdate = true;
-  }, [workData, colorMode, heightMap, heightRange?.[0], heightRange?.[1]]);
+  }, [data, colorMode, heightMap, heightRange?.[0], heightRange?.[1]]);
 
   useEffect(() => {
-    const obj = sceneObjRef.current;
-    if (!obj || !(obj instanceof THREE.Points)) return;
-    (obj.material as THREE.PointsMaterial).size = pointSize;
+    if (!pointsRef.current) return;
+    ((pointsRef.current.material) as THREE.PointsMaterial).size = pointSize;
   }, [pointSize]);
 
   // Hand the controller to the parent exactly once.

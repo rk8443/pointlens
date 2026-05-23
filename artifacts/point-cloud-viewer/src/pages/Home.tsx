@@ -30,8 +30,6 @@ export default function Home() {
   const [heightRange, setHeightRange] = useState<[number, number] | null>(null);
   const [clipOutliers, setClipOutliers] = useState<boolean>(true);
   const [heightMap, setHeightMap] = useState<"linear" | "equalized">("equalized");
-  const [showSurface, setShowSurface] = useState<boolean>(false);
-  const [smoothPasses, setSmoothPasses] = useState<number>(0);
 
   // Compute robust [p5, p95] of Z so the default rainbow is not flattened by
   // a handful of outlier pixels (very common with LMI depth scans).
@@ -300,49 +298,6 @@ export default function Home() {
 
             {data && (
               <div className="space-y-2 pt-1">
-                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Surface</Label>
-                <label className={`flex items-center gap-2 select-none ${data.grid ? "cursor-pointer" : "opacity-40 cursor-not-allowed"}`}>
-                  <input
-                    type="checkbox"
-                    data-testid="checkbox-show-surface"
-                    checked={showSurface && !!data.grid}
-                    disabled={!data.grid}
-                    onChange={(e) => setShowSurface(e.target.checked)}
-                    className="h-3.5 w-3.5 accent-primary"
-                  />
-                  <span className="text-[11px] text-foreground">Surface mesh</span>
-                </label>
-                <p className="text-[10px] text-muted-foreground leading-tight">
-                  {data.grid
-                    ? "Triangulates only the measured pixels — no interpolated fill — and skips real depth discontinuities."
-                    : "Surface mesh requires a raster TIF scan."}
-                </p>
-                {data.grid && (
-                  <div className="space-y-1 pt-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[11px] text-foreground">Smoothing</span>
-                      <span data-testid="text-smooth-passes" className="text-[11px] font-mono text-muted-foreground">
-                        {smoothPasses}
-                      </span>
-                    </div>
-                    <Slider
-                      data-testid="slider-smooth-passes"
-                      value={[smoothPasses]}
-                      min={0}
-                      max={10}
-                      step={1}
-                      onValueChange={(v) => setSmoothPasses(v[0])}
-                    />
-                    <p className="text-[10px] text-muted-foreground leading-tight">
-                      Blurs the height field; higher = smoother but loses fine detail.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {data && (
-              <div className="space-y-2 pt-1">
                 <Label className="text-sm">View</Label>
                 <div className="grid grid-cols-3 gap-1">
                   {([
@@ -464,8 +419,6 @@ export default function Home() {
               heightRange={heightRange ?? undefined}
               clipEnabled={clipOutliers}
               heightMap={heightMap}
-              showSurface={showSurface}
-              smoothPasses={smoothPasses}
               onReady={onCanvasReady}
             />
             <ColorLegend data={data} mode={colorMode} heightRange={heightRange ?? undefined} />
