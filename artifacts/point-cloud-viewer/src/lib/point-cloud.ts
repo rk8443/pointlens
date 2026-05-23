@@ -171,10 +171,10 @@ export function parseCsv(text: string): PointCloudData {
 
 const MAGIC = 0x504c4300;
 
-export async function parseFromServer(file: File): Promise<PointCloudData> {
+export async function parseFromServer(file: File, maxPoints = 500_000): Promise<PointCloudData> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/pc-api/upload", { method: "POST", body: form });
+  const res = await fetch(`/pc-api/upload?max_points=${maxPoints}`, { method: "POST", body: form });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? `Server error ${res.status}`);
@@ -198,11 +198,11 @@ export async function parseFromServer(file: File): Promise<PointCloudData> {
   };
 }
 
-export async function parseFile(file: File): Promise<PointCloudData> {
+export async function parseFile(file: File, maxPoints = 500_000): Promise<PointCloudData> {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
 
   if (ext === 'tif' || ext === 'tiff' || ext === 'png') {
-    return parseFromServer(file);
+    return parseFromServer(file, maxPoints);
   }
 
   if (ext === 'bin' || ext === 'raw' || ext === 'lmi') {

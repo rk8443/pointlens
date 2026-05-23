@@ -9,6 +9,13 @@ import { Separator } from "@/components/ui/separator";
 
 const ACCEPTED_TYPES = ".tif,.tiff,.png,.csv,.txt,.xyz,.lmi,.bin,.raw";
 
+const DENSITY_OPTIONS = [
+  { label: "Low (100K pts)", value: 100_000 },
+  { label: "Medium (500K pts)", value: 500_000 },
+  { label: "High (1M pts)", value: 1_000_000 },
+  { label: "Full (2M pts)", value: 2_000_000 },
+];
+
 export default function Home() {
   const [data, setData] = useState<PointCloudData | null>(null);
   const [filename, setFilename] = useState<string>("");
@@ -16,23 +23,34 @@ export default function Home() {
   const [colorMode, setColorMode] = useState<"height" | "intensity" | "uniform">("height");
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingStage, setLoadingStage] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [maxPoints, setMaxPoints] = useState<number>(500_000);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resetCameraRef = useRef<(() => void) | null>(null);
+  const pendingFileRef = useRef<File | null>(null);
 
-  const processFile = useCallback(async (file: File) => {
+  const processFile = useCallback(async (file: File, pts?: number) => {
     setFilename(file.name);
     setLoading(true);
     setError(null);
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const isImage = ext === "tif" || ext === "tiff" || ext === "png";
+    setLoadingStage(isImage ? "Uploading to processor..." : "Parsing file...");
     try {
-      const parsed = await parseFile(file);
+      if (isImage) {
+        setLoadingStage("Reading image data...");
+      }
+      const parsed = await parseFile(file, pts ?? maxPoints);
+      setLoadingStage("Building point cloud...");
       setData(parsed);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to parse file");
     } finally {
       setLoading(false);
+      setLoadingStage("");
     }
-  }, []);
+  }, [maxPoints]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -95,6 +113,23 @@ export default function Home() {
             {error && (
               <p data-testid="text-error" className="text-xs text-destructive bg-destructive/10 rounded p-2">{error}</p>
             )}
+
+            <div className="space-y-2">
+              <Label className="text-sm">Point Density</Label>
+              <RadioGroup
+                value={String(maxPoints)}
+                onValueChange={(v) => setMaxPoints(Number(v))}
+                className="grid grid-cols-2 gap-1"
+              >
+                {DENSITY_OPTIONS.map((opt) => (
+                  <div key={opt.value} className={`flex items-center space-x-1.5 border rounded px-2 py-1.5 cursor-pointer transition-colors ${maxPoints === opt.value ? "border-primary/60 bg-primary/10" : "border-muted hover:border-muted-foreground/40"}`}>
+                    <RadioGroupItem value={String(opt.value)} id={`d${opt.value}`} data-testid={`radio-density-${opt.value}`} />
+                    <Label htmlFor={`d${opt.value}`} className="text-xs font-normal cursor-pointer leading-tight">{opt.label}</Label>
+                  </div>
+                ))}
+              </RadioGroup>
+              <p className="text-xs text-muted-foreground">Higher density = slower load</p>
+            </div>
 
             <Button
               data-testid="button-load-demo"
@@ -205,10 +240,13 @@ export default function Home() {
 
       <div className="flex-1 relative bg-[#080d14]">
         {loading && (
-          <div className="absolute inset-0 flex items-center justify-center z-10 bg-[#080d14]/80">
-            <div className="flex flex-col items-center gap-4">
+          <div className="absolute inset-0 flex items-center justify-center z-10 bg-[#080d14]/90">
+            <div className="flex flex-col items-center gap-4 max-w-xs text-center">
               <div className="w-12 h-12 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-muted-foreground font-mono">Parsing {filename}...</p>
+              <div>
+                <p className="text-sm font-medium font-mono text-foreground">{loadingStage || "Processing..."}</p>
+                <p className="text-xs text-muted-foreground mt-1 truncate max-w-[200px]">{filename}</p>
+              </div>
             </div>
           </div>
         )}
