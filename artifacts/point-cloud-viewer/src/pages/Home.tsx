@@ -29,20 +29,44 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const resetCameraRef = useRef<(() => void) | null>(null);
   const pendingFileRef = useRef<File | null>(null);
+  const loadTokenRef = useRef(0);
 
   const processFile = useCallback(async (file: File, pts?: number) => {
+    const token = ++loadTokenRef.current;
     setFilename(file.name);
-    setLoading(true);
     setError(null);
+    // Free previous point cloud BEFORE allocating the next ~700MB buffer.
+    // Without this, the old positions/colors/GPU geometry stay live during
+    // decoding and the 2nd/3rd upload hits an out-of-memory failure.
+    setData(null);
+    setLoading(true);
+    setLoadingStage("Releasing previous dataset…");
+    // Yield to React + browser so the canvas unmounts and GPU buffers/old
+    // ArrayBuffer can be reclaimed. Bounded so a throttled tab can't stall.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 80);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        clearTimeout(timer);
+        resolve();
+      }));
+    });
+    if (token !== loadTokenRef.current) return; // a newer upload superseded us
+
     const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
     const isImage = ext === "tif" || ext === "tiff" || ext === "png";
-    setLoadingStage(isImage ? "Uploading to processor…" : "Parsing file…");
+    setLoadingStage(isImage ? "Reading file…" : "Parsing file…");
     try {
       const parsed = await parseFile(file, pts ?? maxPoints, setLoadingStage);
       setLoadingStage("Building point cloud…");
       setData(parsed);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to parse file");
+      const msg = e instanceof Error ? e.message : "Failed to parse file";
+      const isOom = /memory|allocation|RangeError|too large/i.test(msg);
+      setError(
+        isOom
+          ? "Out of memory decoding this file. Reload the page (Ctrl+R) and try again, or use a lower point density."
+          : msg
+      );
     } finally {
       setLoading(false);
       setLoadingStage("");
@@ -51,6 +75,8 @@ export default function Home() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Reset the input value so selecting the same file again still triggers onChange.
+    e.target.value = "";
     if (file) processFile(file);
   };
 
@@ -248,7 +274,7 @@ export default function Home() {
           </div>
         )}
 
-        {!data && !loading ? (
+        {!data ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground">
             <div className="w-24 h-24 mb-6 border border-muted-foreground/20 rounded-full flex items-center justify-center">
               <div className="w-16 h-16 border border-muted-foreground/30 rounded-full animate-pulse flex items-center justify-center">

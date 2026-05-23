@@ -112,7 +112,7 @@ export function PointCloudCanvas({ data, pointSize, colorMode, onResetCamera }: 
     if (!data) return;
 
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(data.positions.slice(), 3));
+    geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
     const colors = buildColors(data, colorMode);
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     geo.computeBoundingBox();
