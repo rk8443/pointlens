@@ -171,14 +171,41 @@ export function parseCsv(text: string): PointCloudData {
 
 const MAGIC = 0x504c4300;
 
-export async function parseFromServer(file: File, maxPoints = 500_000): Promise<PointCloudData> {
+export async function parseFromServer(
+  file: File,
+  maxPoints = 100_000,
+  onStage?: (msg: string) => void,
+): Promise<PointCloudData> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`/pc-api/upload?max_points=${maxPoints}`, { method: "POST", body: form });
+
+  onStage?.("Uploading to processor…");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 120_000); // 2-min hard timeout
+
+  let res: Response;
+  try {
+    res = await fetch(`/pc-api/upload?max_points=${maxPoints}`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
+  } catch (e: unknown) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error("Processing timed out (2 min). Try a lower density or a smaller file.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail ?? `Server error ${res.status}`);
   }
+
+  onStage?.("Downloading point data…");
   const buf = await res.arrayBuffer();
   // Parse binary header: 7 x int32
   const header = new Int32Array(buf, 0, 7);
@@ -198,11 +225,15 @@ export async function parseFromServer(file: File, maxPoints = 500_000): Promise<
   };
 }
 
-export async function parseFile(file: File, maxPoints = 500_000): Promise<PointCloudData> {
+export async function parseFile(
+  file: File,
+  maxPoints = 100_000,
+  onStage?: (msg: string) => void,
+): Promise<PointCloudData> {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
 
   if (ext === 'tif' || ext === 'tiff' || ext === 'png') {
-    return parseFromServer(file, maxPoints);
+    return parseFromServer(file, maxPoints, onStage);
   }
 
   if (ext === 'bin' || ext === 'raw' || ext === 'lmi') {

@@ -36,13 +36,10 @@ export default function Home() {
     setError(null);
     const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
     const isImage = ext === "tif" || ext === "tiff" || ext === "png";
-    setLoadingStage(isImage ? "Uploading to processor..." : "Parsing file...");
+    setLoadingStage(isImage ? "Uploading to processor…" : "Parsing file…");
     try {
-      if (isImage) {
-        setLoadingStage("Reading image data...");
-      }
-      const parsed = await parseFile(file, pts ?? maxPoints);
-      setLoadingStage("Building point cloud...");
+      const parsed = await parseFile(file, pts ?? maxPoints, setLoadingStage);
+      setLoadingStage("Building point cloud…");
       setData(parsed);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to parse file");
