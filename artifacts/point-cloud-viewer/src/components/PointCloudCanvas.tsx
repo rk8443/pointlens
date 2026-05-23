@@ -59,7 +59,7 @@ export function PointCloudCanvas({ data, pointSize, colorMode, onResetCamera }: 
     const scene = new THREE.Scene();
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.001, 10000);
+    const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 200000);
     camera.position.set(0, -30, 30);
     camera.lookAt(0, 0, 0);
     cameraRef.current = camera;
@@ -133,13 +133,15 @@ export function PointCloudCanvas({ data, pointSize, colorMode, onResetCamera }: 
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     if (camera && controls) {
-      const sphere = new THREE.Sphere();
       geo.computeBoundingSphere();
-      geo.boundingSphere!.copy(sphere);
-      const radius = geo.boundingSphere?.radius ?? 20;
-      camera.position.set(0, -radius * 2.5, radius * 2);
+      const radius = (geo.boundingSphere?.radius ?? 0) > 0 ? geo.boundingSphere!.radius : 20;
+      console.log('[canvas] bounding radius=', radius, 'box=', geo.boundingBox);
+      camera.position.set(0, -radius * 2.2, radius * 1.6);
       camera.lookAt(0, 0, 0);
       controls.target.set(0, 0, 0);
+      camera.near = Math.max(0.01, radius / 10000);
+      camera.far = Math.max(20000, radius * 50);
+      camera.updateProjectionMatrix();
       controls.update();
     }
   }, [data, colorMode]);
@@ -156,8 +158,9 @@ export function PointCloudCanvas({ data, pointSize, colorMode, onResetCamera }: 
         const controls = controlsRef.current;
         const geo = pointsRef.current?.geometry;
         if (!camera || !controls) return;
-        const radius = geo?.boundingSphere?.radius ?? 20;
-        camera.position.set(0, -radius * 2.5, radius * 2);
+        const r = geo?.boundingSphere?.radius ?? 0;
+        const radius = r > 0 ? r : 20;
+        camera.position.set(0, -radius * 2.2, radius * 1.6);
         camera.lookAt(0, 0, 0);
         controls.target.set(0, 0, 0);
         controls.update();
