@@ -32,6 +32,7 @@ export default function Home() {
   const [heightMap, setHeightMap] = useState<"linear" | "equalized">("equalized");
   const [fillGaps, setFillGaps] = useState<boolean>(false);
   const [showSurface, setShowSurface] = useState<boolean>(false);
+  const [smoothPasses, setSmoothPasses] = useState<number>(0);
 
   // Compute robust [p5, p95] of Z so the default rainbow is not flattened by
   // a handful of outlier pixels (very common with LMI depth scans).
@@ -328,6 +329,27 @@ export default function Home() {
                     ? "Fill interpolates missing pixels. Surface renders a shaded triangulated mesh instead of points."
                     : "Surface options require a raster TIF scan."}
                 </p>
+                {data.grid && (
+                  <div className="space-y-1 pt-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[11px] text-foreground">Smoothing</span>
+                      <span data-testid="text-smooth-passes" className="text-[11px] font-mono text-muted-foreground">
+                        {smoothPasses}
+                      </span>
+                    </div>
+                    <Slider
+                      data-testid="slider-smooth-passes"
+                      value={[smoothPasses]}
+                      min={0}
+                      max={10}
+                      step={1}
+                      onValueChange={(v) => setSmoothPasses(v[0])}
+                    />
+                    <p className="text-[10px] text-muted-foreground leading-tight">
+                      Blurs the height field; higher = smoother but loses fine detail.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -456,6 +478,7 @@ export default function Home() {
               heightMap={heightMap}
               fillGaps={fillGaps}
               showSurface={showSurface}
+              smoothPasses={smoothPasses}
               onReady={onCanvasReady}
             />
             <ColorLegend data={data} mode={colorMode} heightRange={heightRange ?? undefined} />

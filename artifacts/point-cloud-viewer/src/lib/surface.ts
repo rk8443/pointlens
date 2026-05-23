@@ -43,6 +43,46 @@ export function fillGridGaps(
   return cur;
 }
 
+// Smooth a row-major grid Z with `passes` rounds of a 3x3 box blur. NaN cells
+// stay NaN; valid cells average only their finite neighbors so the smoothing
+// does not bleed across gaps. Returns a new array; input is not mutated.
+export function smoothGrid(
+  grid: NonNullable<PointCloudData["grid"]>,
+  zArray: Float32Array,
+  passes: number,
+): Float32Array {
+  if (passes <= 0) return zArray;
+  const { cols, rows } = grid;
+  let cur = new Float32Array(zArray);
+  let next = new Float32Array(zArray.length);
+  for (let p = 0; p < passes; p++) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const idx = r * cols + c;
+        const v = cur[idx];
+        if (!isFinite(v)) {
+          next[idx] = NaN;
+          continue;
+        }
+        let sum = 0, count = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          const rr = r + dr;
+          if (rr < 0 || rr >= rows) continue;
+          for (let dc = -1; dc <= 1; dc++) {
+            const cc = c + dc;
+            if (cc < 0 || cc >= cols) continue;
+            const nv = cur[rr * cols + cc];
+            if (isFinite(nv)) { sum += nv; count++; }
+          }
+        }
+        next[idx] = count > 0 ? sum / count : v;
+      }
+    }
+    const tmp = cur; cur = next; next = tmp;
+  }
+  return cur;
+}
+
 export interface SurfaceMeshBuffers {
   positions: Float32Array; // (cols*rows) * 3
   indices: Uint32Array;

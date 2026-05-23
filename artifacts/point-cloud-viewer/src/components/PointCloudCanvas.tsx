@@ -5,6 +5,7 @@ import { ViewportGizmo } from "three-viewport-gizmo";
 import { PointCloudData } from "../lib/point-cloud";
 import {
   fillGridGaps,
+  smoothGrid,
   buildSurfaceMesh,
   meshAsPointCloudData,
   gridToFilledPoints,
@@ -27,6 +28,7 @@ interface PointCloudCanvasProps {
   heightMap?: "linear" | "equalized"; // how to map Z within heightRange to a hue
   fillGaps?: boolean; // interpolate NaN cells in the scan raster
   showSurface?: boolean; // render as triangulated surface mesh instead of points
+  smoothPasses?: number; // 3x3 box-blur passes applied to grid Z before meshing
   onReady?: (ctrl: ViewController) => void;
 }
 
@@ -109,6 +111,7 @@ export function PointCloudCanvas({
   heightMap,
   fillGaps,
   showSurface,
+  smoothPasses,
   onReady,
 }: PointCloudCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -132,16 +135,21 @@ export function PointCloudCanvas({
     meshBuffers: SurfaceMeshBuffers | null;
   }>(() => {
     if (!data) return { workData: null, meshBuffers: null };
-    if (!data.grid || (!fillGaps && !showSurface)) {
+    const sp = smoothPasses ?? 0;
+    if (!data.grid || (!fillGaps && !showSurface && sp === 0)) {
       return { workData: data, meshBuffers: null };
     }
-    const zArr = fillGaps ? fillGridGaps(data.grid) : data.grid.z;
+    let zArr = fillGaps ? fillGridGaps(data.grid) : data.grid.z;
+    if (sp > 0) zArr = smoothGrid(data.grid, zArr, sp);
     if (showSurface) {
       const buffers = buildSurfaceMesh(data.grid, zArr);
       return { workData: meshAsPointCloudData(buffers, data), meshBuffers: buffers };
     }
-    return { workData: gridToFilledPoints(data.grid, zArr, data), meshBuffers: null };
-  }, [data, fillGaps, showSurface]);
+    if (fillGaps || sp > 0) {
+      return { workData: gridToFilledPoints(data.grid, zArr, data), meshBuffers: null };
+    }
+    return { workData: data, meshBuffers: null };
+  }, [data, fillGaps, showSurface, smoothPasses]);
 
   // -------- view controller helpers (stable refs used by buttons) --------
   const fitView = useRef<() => void>(() => {});
