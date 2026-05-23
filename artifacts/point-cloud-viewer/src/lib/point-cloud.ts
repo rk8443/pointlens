@@ -216,6 +216,124 @@ export async function parsePng(buffer: ArrayBuffer): Promise<PointCloudData> {
   };
 }
 
+/**
+ * Parse a Keyence BMP point cloud (VR-3000/VR-5000 series and similar).
+ * Keyence exports height-maps as 24-bit BMP where each pixel's RGB encodes
+ * a 24-bit unsigned height: z = R*65536 + G*256 + B. 0 is the no-data marker.
+ * For plain grayscale BMPs (R==G==B), we fall back to single-channel height.
+ */
+export async function parseKeyenceBmp(buffer: ArrayBuffer, maxPoints = 100_000): Promise<PointCloudData> {
+  const blob = new Blob([buffer], { type: "image/bmp" });
+  const bitmap = await createImageBitmap(blob);
+  const { width, height } = bitmap;
+
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not get 2D context for BMP decode");
+  ctx.drawImage(bitmap, 0, 0);
+  const px = ctx.getImageData(0, 0, width, height).data;
+
+  // Detect encoding: scan a sample of non-zero pixels — if nearly all of them
+  // have R==G==B, it's grayscale; otherwise treat as 24-bit packed height.
+  // We MUST exclude zero pixels: Keyence packed-RGB heightmaps often have
+  // huge no-data regions of (0,0,0), which would falsely satisfy R==G==B and
+  // misclassify the entire file as grayscale.
+  const sampleN = Math.min(5000, width * height);
+  const sampleStride = Math.max(1, Math.floor((width * height) / sampleN));
+  let grayCount = 0, nonZeroSamples = 0;
+  for (let p = 0; p < width * height; p += sampleStride) {
+    const r = px[p * 4], g = px[p * 4 + 1], b = px[p * 4 + 2];
+    if (r === 0 && g === 0 && b === 0) continue; // skip no-data
+    nonZeroSamples++;
+    if (r === g && g === b) grayCount++;
+  }
+  // Require strong evidence (>=98% of valid samples) AND enough samples.
+  // Fall back to packed-RGB on insufficient evidence — safer default for
+  // Keyence files where misclassifying packed-RGB as grayscale destroys depth.
+  const isGrayscale = nonZeroSamples >= 100 && (grayCount / nonZeroSamples) >= 0.98;
+  console.log('[parseKeyenceBmp]', {
+    width, height, isGrayscale, nonZeroSamples,
+    grayRatio: nonZeroSamples > 0 ? (grayCount / nonZeroSamples).toFixed(3) : 'n/a',
+  });
+
+  // Subsample to honor maxPoints budget
+  const step = Math.max(1, Math.ceil(Math.sqrt((width * height) / maxPoints)));
+  const cols = Math.ceil(width / step);
+  const rows = Math.ceil(height / step);
+  const cap = cols * rows;
+
+  const xs = new Float32Array(cap);
+  const ys = new Float32Array(cap);
+  const zsRaw = new Float32Array(cap); // raw height before scaling
+  let i = 0;
+  let zMin = Infinity, zMax = -Infinity;
+
+  for (let r = 0; r < height; r += step) {
+    for (let c = 0; c < width; c += step) {
+      const o = (r * width + c) * 4;
+      const R = px[o], G = px[o + 1], B = px[o + 2];
+      let z: number;
+      if (isGrayscale) {
+        z = R; // 0..255
+      } else {
+        // 24-bit packed: R is most significant. 0 = no-data per Keyence convention.
+        z = (R << 16) | (G << 8) | B;
+      }
+      xs[i] = c;
+      ys[i] = r;
+      if (z === 0) {
+        zsRaw[i] = NaN;
+      } else {
+        zsRaw[i] = z;
+        if (z < zMin) zMin = z;
+        if (z > zMax) zMax = z;
+      }
+      i++;
+    }
+  }
+
+  // Scale Z to a sensible visual range using min-max normalization.
+  // Note: parseTiff (LMI) divides by maxVal (full type range) instead. We
+  // diverge here because Keyence packed-RGB heights typically occupy a tiny
+  // fraction of the 24-bit range (0..16M); dividing by 0xFFFFFF would flatten
+  // the cloud almost to a plane. Min-max gives a usable default presentation.
+  const zRange = zMax - zMin;
+  const zVisualScale = Math.max(width, height) / 5;
+  const positions = new Float32Array(cap * 3);
+  const intensities = new Float32Array(cap);
+  let pi = 0;
+  for (let k = 0; k < cap; k++) {
+    const zRaw = zsRaw[k];
+    if (!isFinite(zRaw)) continue;
+    const zNorm = zRange > 0 ? (zRaw - zMin) / zRange : 0;
+    const z = zNorm * zVisualScale;
+    positions[pi * 3]     = xs[k];
+    positions[pi * 3 + 1] = ys[k];
+    positions[pi * 3 + 2] = z;
+    intensities[pi] = zNorm;
+    pi++;
+  }
+
+  console.log('[parseKeyenceBmp] valid points:', pi, 'raw Z range:', zMin, '…', zMax);
+
+  if (pi === 0) {
+    throw new Error(
+      "No valid depth points found in BMP. All pixels are (0,0,0) — " +
+      "this may not be a Keyence height-map BMP, or the file may be empty."
+    );
+  }
+
+  const validPos = positions.slice(0, pi * 3);
+  const validInt = intensities.slice(0, pi);
+  return {
+    positions: validPos,
+    intensities: validInt,
+    pointCount: pi,
+    boundingBox: buildBoundingBox(validPos),
+    sourceInfo: { width, height, channels: isGrayscale ? 1 : 3, bitDepth: isGrayscale ? 8 : 24 },
+  };
+}
+
 export function parseBinary(buffer: ArrayBuffer): PointCloudData {
   const floats = new Float32Array(buffer);
   const pointCount = Math.floor(floats.length / 3);
@@ -343,6 +461,13 @@ export async function parseFile(
     const buf = await file.arrayBuffer();
     onStage?.('Decoding PNG…');
     return parsePng(buf);
+  }
+
+  if (ext === 'bmp') {
+    onStage?.('Reading Keyence BMP…');
+    const buf = await file.arrayBuffer();
+    onStage?.('Decoding BMP…');
+    return parseKeyenceBmp(buf, maxPoints);
   }
 
   if (ext === 'bin' || ext === 'raw' || ext === 'lmi') {

@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
 
-const ACCEPTED_TYPES = ".tif,.tiff,.png,.csv,.txt,.xyz,.lmi,.bin,.raw";
+const ACCEPTED_TYPES = ".tif,.tiff,.png,.bmp,.csv,.txt,.xyz,.lmi,.bin,.raw";
 
 const DENSITY_OPTIONS = [
   { label: "Low (100K pts)", value: 100_000 },
