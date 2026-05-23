@@ -20,6 +20,36 @@ interface PointCloudCanvasProps {
   onReady?: (ctrl: ViewController) => void;
 }
 
+// Build a sorted sample of Z values inside [zLo, zHi]. Used to histogram-equalize
+// the height color map: every hue bucket gets ~equal point count, so the rainbow
+// shows up even for distributions that cluster heavily around the mean (very
+// common with LMI flat-surface scans).
+function buildZQuantileTable(data: PointCloudData, zLo: number, zHi: number): Float32Array {
+  const n = data.pointCount;
+  const maxSamples = 4000;
+  const stride = Math.max(1, Math.floor(n / maxSamples));
+  const buf: number[] = [];
+  for (let i = 0; i < n; i += stride) {
+    const z = data.positions[i * 3 + 2];
+    if (z >= zLo && z <= zHi) buf.push(z);
+  }
+  if (buf.length < 2) return new Float32Array([zLo, zHi]);
+  buf.sort((a, b) => a - b);
+  return Float32Array.from(buf);
+}
+
+// Binary search: fraction of `table` entries <= z, in [0,1].
+function quantileOf(table: Float32Array, z: number): number {
+  let lo = 0;
+  let hi = table.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (table[mid] < z) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo / (table.length - 1);
+}
+
 function buildColors(
   data: PointCloudData,
   colorMode: "height" | "intensity" | "uniform",
@@ -29,14 +59,19 @@ function buildColors(
   const color = new THREE.Color();
   const { min, max } = data.boundingBox;
   const [zLo, zHi] = heightRange ?? [min[2], max[2]];
-  const zSpan = zHi - zLo;
+
+  // Pre-build the equalization table once for the whole point cloud (only for
+  // height mode). This stretches the rainbow across the actual point density,
+  // not the raw Z span.
+  const qTable = colorMode === "height" ? buildZQuantileTable(data, zLo, zHi) : null;
 
   for (let i = 0; i < data.pointCount; i++) {
-    if (colorMode === "height") {
+    if (colorMode === "height" && qTable) {
       const z = data.positions[i * 3 + 2];
-      let t = zSpan === 0 ? 0.5 : (z - zLo) / zSpan;
-      if (t < 0) t = 0;
-      else if (t > 1) t = 1;
+      let t: number;
+      if (z <= zLo) t = 0;
+      else if (z >= zHi) t = 1;
+      else t = quantileOf(qTable, z);
       color.setHSL(0.7 - t * 0.7, 1.0, 0.5);
     } else if (colorMode === "intensity" && data.intensities) {
       const v = data.intensities[i];
