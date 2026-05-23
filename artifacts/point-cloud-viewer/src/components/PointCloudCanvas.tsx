@@ -15,7 +15,8 @@ interface PointCloudCanvasProps {
   data: PointCloudData | null;
   pointSize: number;
   colorMode: "height" | "intensity" | "uniform";
-  heightRange?: [number, number]; // [zMin, zMax] for height coloring
+  heightRange?: [number, number]; // [zMin, zMax] world-space for height coloring
+  clipEnabled?: boolean; // when true, hide points whose Z is outside heightRange
   onReady?: (ctrl: ViewController) => void;
 }
 
@@ -50,7 +51,7 @@ function buildColors(
   return colors;
 }
 
-export function PointCloudCanvas({ data, pointSize, colorMode, heightRange, onReady }: PointCloudCanvasProps) {
+export function PointCloudCanvas({ data, pointSize, colorMode, heightRange, clipEnabled, onReady }: PointCloudCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -58,6 +59,8 @@ export function PointCloudCanvas({ data, pointSize, colorMode, heightRange, onRe
   const controlsRef = useRef<OrbitControls | null>(null);
   const gizmoRef = useRef<ViewportGizmo | null>(null);
   const pointsRef = useRef<THREE.Points | null>(null);
+  const centerZRef = useRef<number>(0); // world-Z offset applied to geometry on load
+  const clipUniformRef = useRef<{ value: THREE.Vector2 } | null>(null);
   const frameRef = useRef<number>(0);
   const mountedRef = useRef(false);
 
@@ -202,12 +205,33 @@ export function PointCloudCanvas({ data, pointSize, colorMode, heightRange, onRe
     geo.boundingBox!.getCenter(center);
     geo.translate(-center.x, -center.y, -center.z);
     geo.computeBoundingSphere();
+    centerZRef.current = center.z;
 
+    // Inject a GPU-side Z-range clip into PointsMaterial. The geometry is in
+    // centered space; we discard fragments whose Z is outside [uClipZ.x, .y].
+    // When clipping is disabled the parent sets a very wide range.
+    const clipUniform = { value: new THREE.Vector2(-1e9, 1e9) };
+    clipUniformRef.current = clipUniform;
     const mat = new THREE.PointsMaterial({
       size: pointSize,
       vertexColors: true,
       sizeAttenuation: false,
     });
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uClipZ = clipUniform;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying float vZ;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvZ = position.z;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nuniform vec2 uClipZ;\nvarying float vZ;",
+        )
+        .replace(
+          "#include <clipping_planes_fragment>",
+          "if (vZ < uClipZ.x || vZ > uClipZ.y) discard;\n#include <clipping_planes_fragment>",
+        );
+    };
 
     const points = new THREE.Points(geo, mat);
     scene.add(points);
@@ -216,6 +240,18 @@ export function PointCloudCanvas({ data, pointSize, colorMode, heightRange, onRe
     fitView.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+
+  // Update the GPU clip range whenever the slider or toggle changes.
+  useEffect(() => {
+    const u = clipUniformRef.current;
+    if (!u) return;
+    if (clipEnabled && heightRange) {
+      const cz = centerZRef.current;
+      u.value.set(heightRange[0] - cz, heightRange[1] - cz);
+    } else {
+      u.value.set(-1e9, 1e9);
+    }
+  }, [clipEnabled, heightRange?.[0], heightRange?.[1], data]);
 
   // Re-color in place when color mode or height range changes (no re-fit).
   useEffect(() => {

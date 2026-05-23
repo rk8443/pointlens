@@ -28,6 +28,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [maxPoints, setMaxPoints] = useState<number>(500_000);
   const [heightRange, setHeightRange] = useState<[number, number] | null>(null);
+  const [clipOutliers, setClipOutliers] = useState<boolean>(true);
 
   // Compute robust [p5, p95] of Z so the default rainbow is not flattened by
   // a handful of outlier pixels (very common with LMI depth scans).
@@ -261,8 +262,18 @@ export default function Home() {
                     <span data-testid="text-height-min">{heightRange[0].toFixed(2)}</span>
                     <span data-testid="text-height-max">{heightRange[1].toFixed(2)}</span>
                   </div>
+                  <label className="flex items-center gap-2 pt-1 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      data-testid="checkbox-clip-outliers"
+                      checked={clipOutliers}
+                      onChange={(e) => setClipOutliers(e.target.checked)}
+                      className="h-3.5 w-3.5 accent-primary"
+                    />
+                    <span className="text-[11px] text-foreground">Hide points outside range</span>
+                  </label>
                   <p className="text-[10px] text-muted-foreground leading-tight">
-                    Narrow the window to bring out variation when outliers flatten the gradient.
+                    Narrow the window to crop out outliers and bring out variation.
                   </p>
                 </div>
               );
@@ -389,6 +400,7 @@ export default function Home() {
               pointSize={pointSize}
               colorMode={colorMode}
               heightRange={heightRange ?? undefined}
+              clipEnabled={clipOutliers}
               onReady={onCanvasReady}
             />
             <ColorLegend data={data} mode={colorMode} heightRange={heightRange ?? undefined} />
