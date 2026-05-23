@@ -236,14 +236,19 @@ export function PointCloudCanvas({ data, pointSize, colorMode, heightRange, clip
 
     if (!data) return;
 
+    // IMPORTANT: copy positions for the GPU before centering so the source
+    // `data.positions` stays in WORLD coords. Other code paths (buildColors,
+    // height-range slider, clip uniform) compare against world-space Z and
+    // would silently break if data.positions were mutated in place.
+    const centered = new Float32Array(data.positions);
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(data.positions, 3));
+    geo.setAttribute("position", new THREE.BufferAttribute(centered, 3));
     const colors = buildColors(data, colorMode, heightRange, heightMap);
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     geo.computeBoundingBox();
     const center = new THREE.Vector3();
     geo.boundingBox!.getCenter(center);
-    geo.translate(-center.x, -center.y, -center.z);
+    geo.translate(-center.x, -center.y, -center.z); // only mutates `centered`
     geo.computeBoundingSphere();
     centerZRef.current = center.z;
 
