@@ -363,6 +363,131 @@ export async function parseKeyenceBmp(buffer: ArrayBuffer, maxPoints = 100_000):
   };
 }
 
+/**
+ * Best-effort parser for Cognex .cdb 3D image files (proprietary, undocumented).
+ *
+ * Reverse-engineered from a single sample captured on a Cognex A5030 sensor:
+ *  - Magic `88 44 22 11` at offset 4
+ *  - Header field at 0x2D = image width as BE u32 (was 2048 for A5030)
+ *  - Data section starts after a fixed prelude + ~16 KB of `0x30` padding
+ *  - Depth samples are stored as u16 big-endian in row-major order
+ *  - 0 and 0xFFFF are no-data markers
+ *  - Trailer (~1 KB) holds .NET BinaryFormatter calibration metadata
+ *
+ * Caveats: tested on ONE file. Width auto-detection falls back to a smoothness
+ * heuristic over candidate widths if the header field isn't plausible.
+ * Values are unscaled depth counts (mm conversion would require the
+ * Cog3DCoordinateSpaceTree transform we can't decode here).
+ */
+export async function parseCognexCdb(buffer: ArrayBuffer, maxPoints = 100_000): Promise<PointCloudData> {
+  const dv = new DataView(buffer);
+  if (buffer.byteLength < 0x100) throw new Error("File too small to be a Cognex .cdb");
+  const magic = dv.getUint32(4, false);
+  if (magic !== 0x88442211) {
+    throw new Error(`Not a Cognex .cdb file (magic ${magic.toString(16)}, expected 88442211)`);
+  }
+
+  // Width hint from header offset 0x2D (off-aligned, big-endian u32). Validate
+  // it's a plausible image width; otherwise we'll auto-detect from row smoothness.
+  let widthHint = dv.getUint32(0x2d, false);
+  if (widthHint < 64 || widthHint > 8192) widthHint = 0;
+
+  // Data section starts at 0x10ee (skip chunk header 12 bytes, then 16 KB padding).
+  // These offsets are empirically determined from the one sample; if a future
+  // file disagrees we'd need a smarter scanner.
+  const DATA_START = 0x10ee + 12 + 0x4000;
+  const TRAILER_BYTES = 1100; // .NET metadata at the end
+  const dataEnd = buffer.byteLength - TRAILER_BYTES;
+  if (DATA_START >= dataEnd) throw new Error("Cognex .cdb data section is too small");
+
+  const usableBytes = (dataEnd - DATA_START) & ~1;
+  const totalSamples = usableBytes >>> 1;
+  const samples = new Uint16Array(totalSamples);
+  // Manually read BE u16s — Uint16Array is host-endian.
+  for (let i = 0; i < totalSamples; i++) {
+    samples[i] = dv.getUint16(DATA_START + i * 2, false);
+  }
+  console.log('[parseCognexCdb] decoded u16 BE samples:', totalSamples);
+
+  // Width auto-detect: try the hint and a list of common Cognex widths,
+  // pick the one with smallest median row-to-row diff (smoothest layout).
+  const candidates = Array.from(new Set([widthHint, 2048, 1920, 1536, 1280, 1024, 800, 768, 640, 512].filter(w => w > 0)));
+  let bestW = widthHint || 2048;
+  let bestScore = Infinity;
+  for (const W of candidates) {
+    const rows = Math.floor(totalSamples / W);
+    if (rows < 50) continue;
+    const sampleRows = Math.min(rows - 1, 200);
+    const rowStep = Math.max(1, Math.floor((rows - 1) / sampleRows));
+    const diffs: number[] = [];
+    for (let r = 0; r < rows - 1; r += rowStep) {
+      let acc = 0, n = 0;
+      const stride = Math.max(1, Math.floor(W / 100));
+      for (let c = 0; c < W; c += stride) {
+        const a = samples[r * W + c];
+        const b = samples[(r + 1) * W + c];
+        if (a === 0 || a === 0xffff || b === 0 || b === 0xffff) continue;
+        acc += Math.abs(a - b);
+        n++;
+      }
+      if (n > 5) diffs.push(acc / n);
+    }
+    if (diffs.length === 0) continue;
+    diffs.sort((a, b) => a - b);
+    const median = diffs[diffs.length >> 1];
+    if (median < bestScore) { bestScore = median; bestW = W; }
+  }
+  const W = bestW;
+  const H = Math.floor(totalSamples / W);
+  console.log('[parseCognexCdb] picked width:', W, 'height:', H, 'row-smoothness:', bestScore.toFixed(1), 'widthHint was:', widthHint);
+
+  // Subsample so we don't exceed maxPoints
+  const step = Math.max(1, Math.ceil(Math.sqrt((W * H) / maxPoints)));
+  const cap = Math.ceil(W / step) * Math.ceil(H / step);
+  const positions = new Float32Array(cap * 3);
+  const intensities = new Float32Array(cap);
+  let pi = 0;
+  let zMin = Infinity, zMax = -Infinity;
+
+  // First pass: find raw Z range across valid samples (for normalization)
+  for (let r = 0; r < H; r += step) {
+    for (let c = 0; c < W; c += step) {
+      const z = samples[r * W + c];
+      if (z === 0 || z === 0xffff) continue;
+      if (z < zMin) zMin = z;
+      if (z > zMax) zMax = z;
+    }
+  }
+  if (!isFinite(zMin)) throw new Error("No valid depth samples found in Cognex .cdb");
+
+  const zRange = zMax - zMin;
+  const zVisualScale = Math.max(W, H) / 5;
+  for (let r = 0; r < H; r += step) {
+    for (let c = 0; c < W; c += step) {
+      const z = samples[r * W + c];
+      if (z === 0 || z === 0xffff) continue;
+      const zNorm = zRange > 0 ? (z - zMin) / zRange : 0;
+      positions[pi * 3]     = c;
+      positions[pi * 3 + 1] = r;
+      positions[pi * 3 + 2] = zNorm * zVisualScale;
+      intensities[pi] = zNorm;
+      pi++;
+    }
+  }
+
+  console.log('[parseCognexCdb] valid points:', pi, 'raw Z range:', zMin, '…', zMax);
+  if (pi === 0) throw new Error("No valid depth samples found in Cognex .cdb");
+
+  const validPos = positions.slice(0, pi * 3);
+  return {
+    positions: validPos,
+    intensities: intensities.slice(0, pi),
+    pointCount: pi,
+    boundingBox: buildBoundingBox(validPos),
+    sourceInfo: { width: W, height: H, channels: 1, bitDepth: 16 },
+  };
+}
+
 export function parseBinary(buffer: ArrayBuffer): PointCloudData {
   const floats = new Float32Array(buffer);
   const pointCount = Math.floor(floats.length / 3);
@@ -497,6 +622,13 @@ export async function parseFile(
     const buf = await file.arrayBuffer();
     onStage?.('Decoding BMP…');
     return parseKeyenceBmp(buf, maxPoints);
+  }
+
+  if (ext === 'cdb') {
+    onStage?.('Reading Cognex CDB…');
+    const buf = await file.arrayBuffer();
+    onStage?.('Decoding Cognex 3D image (experimental)…');
+    return parseCognexCdb(buf, maxPoints);
   }
 
   if (ext === 'bin' || ext === 'raw' || ext === 'lmi') {
