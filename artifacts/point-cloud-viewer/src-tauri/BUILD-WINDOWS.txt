@@ -1,0 +1,51 @@
+3D Viewer — Building the Windows installer
+============================================
+
+You need a Windows 10 or 11 PC.  (MSI installers can only be built on
+Windows — Microsoft's installer toolkit does not run on Linux/Mac.)
+
+If you don't have a Windows machine, options are:
+  - Borrow any Windows PC for ~20 minutes
+  - Spin up a free Windows 11 evaluation VM in Hyper-V or VirtualBox
+  - Rent a Windows cloud machine for an hour (~$0.50 on AWS/Azure)
+
+One-time setup on the Windows machine (do these once)
+-----------------------------------------------------
+  1.  Install Node.js 20 LTS
+      https://nodejs.org/
+
+  2.  Install Visual Studio Build Tools and tick the
+      "Desktop development with C++" workload
+      https://visualstudio.microsoft.com/downloads/?q=build+tools
+
+  3.  (Optional) Install Git if you don't have it
+      https://git-scm.com/download/win
+
+Getting the source code onto Windows
+------------------------------------
+  Option A — download as zip:
+    In Replit:  three-dot menu (top-right of the file tree)
+                → Download as zip.  Unzip on Windows.
+
+  Option B — git clone (if you push this repo somewhere):
+    git clone <your repo url>
+
+Building the installer
+----------------------
+  1.  Open File Explorer and go to:
+          artifacts\point-cloud-viewer\src-tauri\
+  2.  Right-click  build-windows.ps1  →  "Run with PowerShell"
+  3.  Wait. First run compiles Rust (10-15 min). After that, ~3 min.
+  4.  When it finishes, File Explorer pops open with the MSI selected.
+
+Output
+------
+  artifacts\point-cloud-viewer\src-tauri\target\release\bundle\msi\
+      3D Viewer_0.1.0_x64_en-US.msi          (recommended)
+
+  artifacts\point-cloud-viewer\src-tauri\target\release\bundle\nsis\
+      3D Viewer_0.1.0_x64-setup.exe          (alternative)
+
+Either one installs "3D Viewer" with a Desktop icon and a Start Menu
+entry.  Use the MSI if you'll deploy it to other PCs (it's the standard
+Windows enterprise installer format and is preferred by IT departments).
