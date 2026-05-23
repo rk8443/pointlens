@@ -441,24 +441,36 @@ export async function parseCognexCdb(buffer: ArrayBuffer, maxPoints = 100_000): 
   const H = Math.floor(totalSamples / W);
   console.log('[parseCognexCdb] picked width:', W, 'height:', H, 'row-smoothness:', bestScore.toFixed(1), 'widthHint was:', widthHint);
 
+  // First — full scan for valid samples and Z range. Cheap (one pass over u16[]).
+  // We do the FULL scan (not subsampled) so we don't miss sparse valid pixels.
+  let zMin = Infinity, zMax = -Infinity;
+  let validTotal = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const z = samples[i];
+    if (z === 0 || z === 0xffff) continue;
+    validTotal++;
+    if (z < zMin) zMin = z;
+    if (z > zMax) zMax = z;
+  }
+  console.log('[parseCognexCdb] full scan: validTotal=', validTotal, 'of', samples.length, `(${(validTotal/samples.length*100).toFixed(2)}%)`);
+
+  // If the file has essentially no depth data, surface that clearly rather
+  // than silently returning empty or throwing a generic error.
+  if (validTotal < 100) {
+    throw new Error(
+      `This Cognex .cdb file contains almost no valid depth data ` +
+      `(${validTotal} valid pixels out of ${samples.length}, ${(validTotal/samples.length*100).toFixed(3)}%). ` +
+      `The scan may have failed, missed the target, or this may be a blank/calibration capture. ` +
+      `Try a different file.`
+    );
+  }
+
   // Subsample so we don't exceed maxPoints
   const step = Math.max(1, Math.ceil(Math.sqrt((W * H) / maxPoints)));
   const cap = Math.ceil(W / step) * Math.ceil(H / step);
   const positions = new Float32Array(cap * 3);
   const intensities = new Float32Array(cap);
   let pi = 0;
-  let zMin = Infinity, zMax = -Infinity;
-
-  // First pass: find raw Z range across valid samples (for normalization)
-  for (let r = 0; r < H; r += step) {
-    for (let c = 0; c < W; c += step) {
-      const z = samples[r * W + c];
-      if (z === 0 || z === 0xffff) continue;
-      if (z < zMin) zMin = z;
-      if (z > zMax) zMax = z;
-    }
-  }
-  if (!isFinite(zMin)) throw new Error("No valid depth samples found in Cognex .cdb");
 
   const zRange = zMax - zMin;
   const zVisualScale = Math.max(W, H) / 5;
