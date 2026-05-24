@@ -292,14 +292,31 @@ try {
     Write-Host "    pnpm not found - installing..."
 }
 if ($needsPnpm) {
-    # Refresh corepack first so any leftover corepack shim works too.
-    Write-Host "    Updating corepack (fixes stale npm signing keys)..."
-    & npm install -g corepack@latest 2>&1 | ForEach-Object { Write-Host "    $_" }
-    # Install pnpm directly. -g writes to npm's global prefix, which is on
-    # PATH after Node's installer ran.
-    Write-Host "    Installing pnpm 9 via npm..."
-    & npm install -g pnpm@9 2>&1 | ForEach-Object { Write-Host "    $_" }
-    if ($LASTEXITCODE -ne 0) { Fail "Could not install pnpm. Run 'npm install -g pnpm@9' manually, then re-run launch.bat." }
+    # npm prints harmless warnings to stderr (deprecations, EBADENGINE on
+    # mismatched engines, etc.) and with $ErrorActionPreference='Stop'
+    # PowerShell turns those into terminating RemoteException errors. Drop
+    # back to 'Continue' around npm calls so warnings stay warnings, and
+    # rely on $LASTEXITCODE for the real success/failure signal.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        # Best-effort: remove any old corepack-shimmed pnpm so the real
+        # binary we're about to install via npm wins on PATH. Failure
+        # here is fine (corepack might not be enabled at all).
+        try { & corepack disable pnpm 2>&1 | Out-Null } catch {}
+
+        # Install pnpm directly via npm. --silent hides the noisy warnings
+        # while still letting real errors through via the exit code. -g
+        # writes to npm's global prefix, which is on PATH after Node's
+        # installer ran.
+        Write-Host "    Installing pnpm 9 via npm (this bypasses corepack entirely)..."
+        & npm install -g --silent pnpm@9 2>&1 | ForEach-Object { Write-Host "    $_" }
+        if ($LASTEXITCODE -ne 0) {
+            Fail "Could not install pnpm. Run 'npm install -g pnpm@9' manually in a new PowerShell window, then re-run launch.bat."
+        }
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
     Refresh-Path
     try {
         $v = & pnpm --version
