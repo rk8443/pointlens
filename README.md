@@ -59,6 +59,38 @@ Then in File Explorer, double-click **`launch.bat`** and click **Yes** on the UA
 
 To install as a proper Windows MSI / EXE installer with Start Menu entry and desktop shortcut, see [`artifacts/point-cloud-viewer/src-tauri/BUILD-WINDOWS.txt`](artifacts/point-cloud-viewer/src-tauri/BUILD-WINDOWS.txt).
 
+### If `launch.bat` can't install something (locked-down / non-admin PC)
+
+The script needs admin rights to install Node.js, MSVC Build Tools, etc. If your account can't elevate (corporate / managed device, no UAC permission, blocked installers, no `winget`), ask IT to install these — or install them yourself once admin is granted — then re-run `launch.bat`. The script auto-detects each one and skips ahead.
+
+| # | Dependency | What it is | Download | Install notes |
+|---|---|---|---|---|
+| 1 | **Node.js 20 LTS** | JavaScript runtime + npm | https://nodejs.org/en/download/prebuilt-installer (pick **Windows / x64 / .msi**) | Double-click the MSI. Default options are fine. Adds `node` and `npm` to PATH. |
+| 2 | **pnpm** | Package manager (used by this repo) | Installed automatically by Node.js via Corepack. If that fails, run in PowerShell: `npm install -g pnpm` | Needs Node.js installed first. |
+| 3 | **Visual Studio 2022 Build Tools** with **"Desktop development with C++"** workload + **Windows 11 SDK** | C/C++ compiler + linker that Rust needs on Windows | https://visualstudio.microsoft.com/downloads/?q=build+tools (scroll to "Tools for Visual Studio" → "Build Tools for Visual Studio 2022") | ~1.5 GB. In the installer's "Workloads" tab, tick **Desktop development with C++**. Leave the default optional components checked. |
+| 4 | **Rust (stable, MSVC toolchain)** | Compiler for the Tauri desktop shell | https://win.rustup.rs/x86_64 (downloads `rustup-init.exe`) | Run `rustup-init.exe`, accept defaults (option 1). Requires #3 to already be installed. |
+| 5 | **Microsoft Edge WebView2 Runtime** | Embedded browser engine the app renders inside | https://developer.microsoft.com/microsoft-edge/webview2 (pick **Evergreen Standalone Installer / x64**) | Already present on Windows 11 and most up-to-date Windows 10. |
+| 6 | **Git for Windows** | Needed to `git clone` and `git pull` | https://git-scm.com/download/win | Only needed if you're cloning the repo (skip if you downloaded the zip). |
+
+After all of these are installed, open a **new** PowerShell or Command Prompt window (so PATH updates take effect), `cd` into the `3d-viewer` folder, and double-click `launch.bat` again. The script will detect each tool, skip the install step, and jump straight to building the desktop app.
+
+#### Fully offline / portable alternative (no installs needed)
+
+If you can't install anything system-wide, you can still run the viewer in a browser:
+
+1. Download Node.js as a **zip** (not MSI) from https://nodejs.org/en/download/prebuilt-binaries → "Windows / x64 / .zip". Unzip anywhere.
+2. Open PowerShell, then run:
+   ```powershell
+   $env:Path = "C:\path\to\node-v20.18.1-win-x64;$env:Path"
+   cd 3d-viewer
+   npm install -g pnpm
+   pnpm install
+   pnpm --filter @workspace/point-cloud-viewer run dev
+   ```
+3. Open the URL it prints (typically `http://localhost:1420`) in any modern browser.
+
+This skips the desktop wrapper entirely — no admin, no Rust, no MSVC needed. You lose the standalone window but get all the viewer features.
+
 ## Quick start (browser / dev mode, any OS)
 
 ```bash
