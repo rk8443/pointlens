@@ -1,6 +1,12 @@
 @echo off
-REM Double-click this file to launch 3D Viewer on Windows.
-REM First run installs everything and builds the app (~10-15 min).
-REM Subsequent runs just open the desktop window.
+REM ====================================================================
+REM  3D Viewer — double-click to launch.
+REM  First run: auto-installs Node.js, MSVC Build Tools, Rust, WebView2,
+REM             project deps, builds the app, then opens it.
+REM  Subsequent runs: opens the app in ~1 second, no checks.
+REM
+REM  The first-time installs need admin rights (winget elevates itself
+REM  via UAC prompts).  Click "Yes" when Windows asks.
+REM ====================================================================
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch.ps1"
-pause
+if errorlevel 1 pause
