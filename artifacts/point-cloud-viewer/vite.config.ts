@@ -37,8 +37,15 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    runtimeErrorOverlay(),
-    ...(process.env.NODE_ENV !== "production" &&
+    // Replit's runtime-error overlay tries to wire itself into a parent
+    // window message bus that doesn't exist inside a Tauri WebView, which
+    // can present as a blank black window on first paint. Only enable it
+    // for browser dev builds (NOT desktop builds, NOT production).
+    ...(!isTauri && process.env.NODE_ENV !== "production"
+      ? [runtimeErrorOverlay()]
+      : []),
+    ...(!isTauri &&
+    process.env.NODE_ENV !== "production" &&
     process.env.REPL_ID !== undefined
       ? [
           await import("@replit/vite-plugin-cartographer").then((m) =>
