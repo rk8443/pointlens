@@ -147,18 +147,13 @@ $tempDir      = Join-Path $env:TEMP "pointlens-setup"
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 # --- Fast path: built binary already exists, just launch it ---------
-if (Test-Path $builtExe) {
-    Write-Host "Launching PointLens..." -ForegroundColor Green
-    Start-Process -FilePath $builtExe
-    Start-Sleep -Seconds 2
-    exit 0
-}
-# Backward-compat: an older build may have produced "3D Viewer.exe".
-if (Test-Path $legacyExe) {
-    Write-Host "Launching PointLens..." -ForegroundColor Green
-    Start-Process -FilePath $legacyExe
-    Start-Sleep -Seconds 2
-    exit 0
+foreach ($exe in @($builtExe, $cargoExe, $legacyExe)) {
+    if (Test-Path $exe) {
+        Write-Host "Launching PointLens..." -ForegroundColor Green
+        Start-Process -FilePath $exe
+        Start-Sleep -Seconds 2
+        exit 0
+    }
 }
 # --- Preflight: probe every prerequisite ONCE before doing anything --
 # Without this the user has to wait for 5 sequential "Checking X" steps
@@ -512,15 +507,19 @@ Write-Host "    ----------------------------------------------------"
 
 # --- 8. Launch ------------------------------------------------------
 Write-Step "Launching PointLens"
-if (Test-Path $builtExe) {
+$exeToLaunch = $null
+foreach ($exe in @($builtExe, $cargoExe, $legacyExe)) {
+    if (Test-Path $exe) { $exeToLaunch = $exe; break }
+}
+if ($exeToLaunch) {
     Write-StepDone
     $total = (Get-Date) - $Script:TotalStart
     Write-Host ""
     Write-Host ("Total setup time: {0:hh\:mm\:ss}" -f $total) -ForegroundColor Green
     Write-Host "Next time, just double-click launch.bat - it opens instantly." -ForegroundColor Green
     Write-Host ""
-    Start-Process -FilePath $builtExe
+    Start-Process -FilePath $exeToLaunch
     Start-Sleep -Seconds 2
 } else {
-    Fail "Build finished but $builtExe was not found. Check the build output above."
+    Fail "Build finished but no PointLens executable was found in $builtExeDir. Check the build output above."
 }
