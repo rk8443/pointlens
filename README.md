@@ -45,17 +45,17 @@ An offline-first desktop and web viewer for industrial **3D height-map / point-c
 
 ## Quick start (Windows desktop)
 
-You will need a Windows 10 or 11 PC with **Node.js 20+** and **Visual Studio Build Tools** (Desktop development with C++ workload) installed. The first launch installs Rust automatically.
+You need a Windows 10 (recent build) or Windows 11 PC. Nothing else — the launch script auto-installs every prerequisite (Node.js, pnpm, Rust, the Visual Studio C++ Build Tools, and the WebView2 runtime) using `winget`.
 
 ```bash
 git clone https://github.com/rk8443/3d-viewer.git
 cd 3d-viewer
 ```
 
-Then in File Explorer, double-click **`launch.bat`**.
+Then in File Explorer, double-click **`launch.bat`** and click **Yes** on the UAC prompts that appear during the one-time installs.
 
-- **First run:** 10–15 minutes (compiles the Rust desktop wrapper).
-- **Every run after:** opens in ~1 second.
+- **First run:** 15–25 minutes total (most of it is the one-time MSVC Build Tools install ~1.5 GB, plus the first Rust compile).
+- **Every run after:** opens in ~1 second — the script detects the cached `3D Viewer.exe` and launches it immediately with no checks.
 
 To install as a proper Windows MSI / EXE installer with Start Menu entry and desktop shortcut, see [`artifacts/point-cloud-viewer/src-tauri/BUILD-WINDOWS.txt`](artifacts/point-cloud-viewer/src-tauri/BUILD-WINDOWS.txt).
 
