@@ -1,5 +1,5 @@
 # =====================================================================
-#  3D Viewer — launch script (Windows)
+#  3D Viewer - launch script (Windows)
 # =====================================================================
 #  Usage:   double-click launch.bat  (which runs this script)
 #  Or:      Right-click launch.ps1 -> "Run with PowerShell"
@@ -7,7 +7,7 @@
 #  First run: auto-installs all prerequisites (Node.js, pnpm, Rust,
 #             Visual Studio C++ Build Tools), installs project deps,
 #             builds the desktop app, then launches it.
-#  Later runs: just launches the existing 3D Viewer.exe — no checks.
+#  Later runs: just launches the existing 3D Viewer.exe - no checks.
 #
 #  Requires Windows 10/11 64-bit with winget available (winget is
 #  preinstalled on Windows 11 and on up-to-date Windows 10).
@@ -52,7 +52,7 @@ if (Test-Path $builtExe) {
 
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host " 3D Viewer — first-time setup" -ForegroundColor Cyan
+Write-Host " 3D Viewer - first-time setup" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "This will install everything needed and build the app."
 Write-Host "First run: 15-25 minutes (downloads ~2 GB of build tools)."
@@ -125,7 +125,7 @@ if (Test-Path $vswhere) {
     if ($vs) { Write-Host "Found Visual Studio at: $vs"; $haveMsvc = $true }
 }
 if (-not $haveMsvc) {
-    Write-Host "MSVC Build Tools not found. Installing via winget (this is the big one — ~1.5 GB, 5-10 min)..."
+    Write-Host "MSVC Build Tools not found. Installing via winget (this is the big one - ~1.5 GB, 5-10 min)..."
     # Install Build Tools with the required workload and Windows SDK.
     & winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --silent --override "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended"
     if ($LASTEXITCODE -ne 0) {
@@ -175,7 +175,7 @@ if ($hasWebView2) {
 } else {
     Write-Host "Installing WebView2 runtime via winget..."
     & winget install --id Microsoft.EdgeWebView2Runtime -e --accept-source-agreements --accept-package-agreements --silent 2>$null
-    # Non-fatal if it can't — Windows 11 always has it; some Win10 builds too.
+    # Non-fatal if it can't - Windows 11 always has it; some Win10 builds too.
 }
 
 # --- 6. pnpm install ------------------------------------------------
@@ -184,7 +184,7 @@ Write-Step "Installing JavaScript dependencies (pnpm install)"
 if ($LASTEXITCODE -ne 0) { Fail "pnpm install failed. Scroll up for details." }
 
 # --- 7. Tauri build -------------------------------------------------
-Write-Step "Building the desktop app (Rust compile — slow part, 10-15 min)"
+Write-Step "Building the desktop app (Rust compile - slow part, 10-15 min)"
 $env:TAURI_BUILD = "1"
 & pnpm --filter "@workspace/point-cloud-viewer" run tauri build
 if ($LASTEXITCODE -ne 0) { Fail "Tauri build failed. Scroll up for the error." }
@@ -194,7 +194,7 @@ if (Test-Path $builtExe) {
     Write-Step "Done. Launching 3D Viewer..."
     Start-Process -FilePath $builtExe
     Write-Host ""
-    Write-Host "Next time, just double-click launch.bat — it opens instantly." -ForegroundColor Green
+    Write-Host "Next time, just double-click launch.bat - it opens instantly." -ForegroundColor Green
     Start-Sleep -Seconds 2
 } else {
     Fail "Build finished but $builtExe was not found. Check the build output above."
