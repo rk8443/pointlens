@@ -8,15 +8,36 @@
 #             app; then launches it.
 #  Later runs: just launches the existing 3D Viewer.exe in ~1 second.
 #
-#  Installers are downloaded directly from Microsoft / Node.js / Rust
-#  (no winget required), so this works on older Windows 10 builds too.
+#  All long operations report live progress so you always know what
+#  is happening: downloads show MB / total + speed, installers show
+#  elapsed time + spinner, and each step prints how long it took.
 # =====================================================================
 
 $ErrorActionPreference = "Stop"
 
-function Write-Step($msg) {
+# --- Total steps (kept in sync with the "Step N/$TotalSteps" headers) ---
+$Script:TotalSteps   = 8
+$Script:CurrentStep  = 0
+$Script:TotalStart   = Get-Date
+$Script:StepStart    = $null
+
+function Write-Step($title) {
+    if ($Script:StepStart) {
+        $elapsed = (Get-Date) - $Script:StepStart
+        Write-Host ("    done in {0:mm}:{0:ss}" -f $elapsed) -ForegroundColor DarkGray
+    }
+    $Script:CurrentStep++
+    $Script:StepStart = Get-Date
+    $pct = [int](100 * ($Script:CurrentStep - 1) / $Script:TotalSteps)
     Write-Host ""
-    Write-Host "==> $msg" -ForegroundColor Cyan
+    Write-Host ("[{0}/{1}] {2}%  ==> {3}" -f $Script:CurrentStep, $Script:TotalSteps, $pct, $title) -ForegroundColor Cyan
+}
+function Write-StepDone {
+    if ($Script:StepStart) {
+        $elapsed = (Get-Date) - $Script:StepStart
+        Write-Host ("    done in {0:mm}:{0:ss}" -f $elapsed) -ForegroundColor DarkGray
+        $Script:StepStart = $null
+    }
 }
 function Fail($msg) {
     Write-Host ""
@@ -29,15 +50,85 @@ function Refresh-Path {
     $user    = [Environment]::GetEnvironmentVariable("Path", "User")
     $env:Path = "$machine;$user;$env:Path"
 }
-function Download-File($url, $outPath) {
-    Write-Host "  downloading $url"
-    $oldPref = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'  # massively speeds up Invoke-WebRequest
+
+# --- Download with live progress: MB / total + percent + MB/s ---------
+# Uses HttpClient streaming so we always get a meaningful in-place readout
+# even on hosts that suppress Invoke-WebRequest's native progress bar.
+function Download-FileWithProgress($url, $outPath, $label) {
+    Add-Type -AssemblyName System.Net.Http -ErrorAction SilentlyContinue
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $client  = New-Object System.Net.Http.HttpClient($handler)
+    $client.Timeout = [TimeSpan]::FromMinutes(15)
     try {
-        Invoke-WebRequest -Uri $url -OutFile $outPath -UseBasicParsing
+        $resp = $client.GetAsync($url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $resp.EnsureSuccessStatusCode() | Out-Null
+        $total = $resp.Content.Headers.ContentLength
+        $stream = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        try {
+            $fs = [System.IO.File]::Create($outPath)
+            try {
+                $buf = New-Object byte[] 131072
+                [int64]$read = 0
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $lastPrint = 0
+                while (($n = $stream.Read($buf, 0, $buf.Length)) -gt 0) {
+                    $fs.Write($buf, 0, $n)
+                    $read += $n
+                    if ($sw.ElapsedMilliseconds - $lastPrint -gt 200) {
+                        $lastPrint = $sw.ElapsedMilliseconds
+                        $mbDone = [math]::Round($read / 1MB, 1)
+                        $speed  = if ($sw.Elapsed.TotalSeconds -gt 0) { [math]::Round(($read / 1MB) / $sw.Elapsed.TotalSeconds, 1) } else { 0 }
+                        if ($total -and $total -gt 0) {
+                            $mbTot = [math]::Round($total / 1MB, 1)
+                            $pct   = [int](($read * 100) / $total)
+                            $bar   = ('#' * [int]($pct/4)).PadRight(25, '.')
+                            Write-Host -NoNewline ("`r    {0}  [{1}] {2,3}%  {3} / {4} MB  {5} MB/s     " -f $label, $bar, $pct, $mbDone, $mbTot, $speed)
+                        } else {
+                            Write-Host -NoNewline ("`r    {0}  {1} MB downloaded  {2} MB/s     " -f $label, $mbDone, $speed)
+                        }
+                    }
+                }
+                # Final line
+                $mbDone = [math]::Round($read / 1MB, 1)
+                Write-Host -NoNewline ("`r    {0}  downloaded {1} MB in {2:F1}s                                   " -f $label, $mbDone, $sw.Elapsed.TotalSeconds)
+                Write-Host ""
+            } finally { $fs.Dispose() }
+        } finally { $stream.Dispose() }
     } finally {
-        $ProgressPreference = $oldPref
+        if ($resp) { $resp.Dispose() }
+        $client.Dispose()
     }
+}
+
+# --- Run a silent installer with a live elapsed/spinner readout -------
+function Start-WithProgress {
+    param(
+        [string]$FilePath,
+        [string[]]$ArgumentList,
+        [string]$Label,
+        [switch]$RunAs
+    )
+    $startArgs = @{
+        FilePath     = $FilePath
+        ArgumentList = $ArgumentList
+        PassThru     = $true
+    }
+    if ($RunAs) { $startArgs['Verb'] = 'RunAs' }
+    $proc = Start-Process @startArgs
+    $spin = @('|','/','-','\')
+    $i = 0
+    $start = Get-Date
+    while (-not $proc.HasExited) {
+        Start-Sleep -Milliseconds 500
+        $i = ($i + 1) % $spin.Length
+        $elapsed = (Get-Date) - $start
+        Write-Host -NoNewline ("`r    {0} {1}  elapsed {2:mm}:{2:ss}   (this can take several minutes - normal)   " -f $spin[$i], $Label, $elapsed)
+    }
+    $elapsed = (Get-Date) - $start
+    Write-Host -NoNewline ("`r    {0}  finished in {1:mm}:{1:ss}                                                  " -f $Label, $elapsed)
+    Write-Host ""
+    return $proc
 }
 
 # --- Move to the repo root (folder containing this script) ----------
@@ -63,8 +154,8 @@ Write-Host "==================================================" -ForegroundColor
 Write-Host " 3D Viewer - first-time setup" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "This will install everything needed and build the app."
-Write-Host "First run: 15-25 minutes (downloads ~2 GB of build tools)."
-Write-Host "After that, double-clicking launch.bat opens the app in 1 sec."
+Write-Host "First run total: ~15-25 minutes (downloads ~2 GB of build tools)."
+Write-Host "After that, double-clicking launch.bat opens the app in ~1 sec."
 Write-Host ""
 Write-Host "You will see UAC prompts during installs. Click YES to allow." -ForegroundColor Yellow
 Write-Host ""
@@ -75,46 +166,32 @@ $nodeOk = $false
 try {
     $nodeVersion = (& node --version) -replace 'v',''
     if ([int]($nodeVersion.Split('.')[0]) -ge 20) {
-        Write-Host "Found Node.js $nodeVersion"
+        Write-Host "    Found Node.js $nodeVersion - skipping install"
         $nodeOk = $true
     } else {
-        Write-Host "Node.js $nodeVersion is too old (need 20+). Will upgrade."
+        Write-Host "    Node.js $nodeVersion is too old (need 20+). Will upgrade."
     }
 } catch {
-    Write-Host "Node.js not found."
+    Write-Host "    Node.js not found - will install."
 }
 if (-not $nodeOk) {
-    Write-Host "Downloading Node.js 20 LTS installer..."
     $nodeMsi = Join-Path $tempDir "node-lts.msi"
     $nodeLog = Join-Path $tempDir "node-install.log"
-    Download-File "https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi" $nodeMsi
+    Download-FileWithProgress "https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi" $nodeMsi "Node.js 20 LTS"
 
-    Write-Host "Running Node.js installer."
-    Write-Host "  - A UAC prompt will appear asking for admin permission. Click YES."
-    Write-Host "  - A small progress bar will then appear. Wait for it to finish (1-2 min)."
-
-    # /qb = basic UI (shows progress bar but no questions)
-    # /L*v = verbose log so we can diagnose failures
-    # -Verb RunAs explicitly requests UAC elevation
-    $msiArgs = "/i `"$nodeMsi`" /qb /norestart /L*v `"$nodeLog`""
+    Write-Host "    Launching Node.js installer (UAC prompt will appear - click YES)..."
+    $msiArgs = @("/i", "`"$nodeMsi`"", "/qb", "/norestart", "/L*v", "`"$nodeLog`"")
     try {
-        $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Verb RunAs -Wait -PassThru
+        $p = Start-WithProgress -FilePath "msiexec.exe" -ArgumentList $msiArgs -Label "Installing Node.js" -RunAs
     } catch {
         Fail @"
 Could not start the Node.js installer with admin rights.
-This usually means UAC was cancelled or this account cannot elevate.
-
 Easiest fix: install Node.js manually, then re-run launch.bat:
-  1. Open this file in a browser:  $nodeMsi
+  1. Open this file:  $nodeMsi
   2. Double-click it, accept defaults.
-  3. Close this PowerShell window completely.
-  4. Double-click launch.bat again.
-
-If your account can't install software at all, see the README section
-'If launch.bat can't install something (locked-down / non-admin PC)'.
+  3. Close this window and double-click launch.bat again.
 "@
     }
-
     if ($p.ExitCode -ne 0) {
         $hint = switch ($p.ExitCode) {
             1602 { "the UAC prompt was cancelled" }
@@ -126,105 +203,101 @@ If your account can't install software at all, see the README section
         Fail @"
 Node.js installer failed: $hint.
 
-Quick fixes to try, in order:
-  1. Run launch.bat again and CLICK YES on the UAC prompt this time.
-  2. Open File Explorer, navigate to the installer, right-click -> Run as administrator:
-       $nodeMsi
-  3. If you don't have admin rights at all, ask IT to install Node.js 20 LTS
-     from https://nodejs.org/  (or follow the README's 'locked-down PC' section).
-
-Full installer log saved to:
-  $nodeLog
-(open it and search for 'Return value 3' to find the underlying error)
+Quick fixes:
+  1. Re-run launch.bat and CLICK YES on the UAC prompt.
+  2. Or right-click -> Run as administrator on:  $nodeMsi
+  3. Full installer log:  $nodeLog
 "@
     }
     Refresh-Path
     try {
         $v = & node --version
-        Write-Host "Installed Node.js $v"
+        Write-Host "    Installed Node.js $v"
     } catch {
         Fail "Node.js installed but not on PATH yet. Close this window and double-click launch.bat again."
     }
 }
 
-# --- 2. pnpm via corepack (ships with Node.js) ---------------------
+# --- 2. pnpm -------------------------------------------------------
 Write-Step "Checking pnpm"
 try {
-    $v = & pnpm --version
-    Write-Host "Found pnpm $v"
+    $v = & pnpm --version 2>$null
+    Write-Host "    Found pnpm $v - skipping install"
 } catch {
-    Write-Host "Installing pnpm via corepack..."
-    & corepack enable
-    & corepack prepare pnpm@9 --activate
+    Write-Host "    Trying corepack..."
+    & corepack enable 2>&1 | ForEach-Object { Write-Host "    $_" }
+    & corepack prepare pnpm@9 --activate 2>&1 | ForEach-Object { Write-Host "    $_" }
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "corepack failed, falling back to npm..."
-        & npm install -g pnpm
+        Write-Host "    corepack failed, falling back to: npm install -g pnpm"
+        & npm install -g pnpm 2>&1 | ForEach-Object { Write-Host "    $_" }
         if ($LASTEXITCODE -ne 0) { Fail "Could not install pnpm." }
     }
     Refresh-Path
+    try {
+        $v = & pnpm --version
+        Write-Host "    Installed pnpm $v"
+    } catch {
+        Fail "pnpm installed but not on PATH. Close this window and re-run launch.bat."
+    }
 }
 
-# --- 3. Visual Studio C++ Build Tools (Rust linker needs this) ----
+# --- 3. Visual Studio C++ Build Tools ------------------------------
 Write-Step "Checking Visual Studio C++ Build Tools"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $haveMsvc = $false
 if (Test-Path $vswhere) {
     $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-    if ($vs) { Write-Host "Found Visual Studio at: $vs"; $haveMsvc = $true }
+    if ($vs) { Write-Host "    Found at: $vs - skipping install"; $haveMsvc = $true }
 }
 if (-not $haveMsvc) {
-    Write-Host "Downloading Visual Studio 2022 Build Tools bootstrapper..."
     $vsExe = Join-Path $tempDir "vs_BuildTools.exe"
-    Download-File "https://aka.ms/vs/17/release/vs_BuildTools.exe" $vsExe
-    Write-Host "Running Build Tools installer (~1.5 GB, 5-15 min, UAC will prompt)..."
-    Write-Host "Installing workload: Desktop development with C++ + Windows 11 SDK"
+    Download-FileWithProgress "https://aka.ms/vs/17/release/vs_BuildTools.exe" $vsExe "VS Build Tools bootstrapper"
+    Write-Host "    Workload: Desktop development with C++ + Windows 11 SDK (~1.5 GB)"
+    Write-Host "    UAC prompt will appear - click YES, then wait. This is the slowest step."
     $vsArgs = @(
         "--quiet", "--wait", "--norestart", "--nocache",
         "--add", "Microsoft.VisualStudio.Workload.VCTools",
         "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621",
         "--includeRecommended"
     )
-    $p = Start-Process -FilePath $vsExe -ArgumentList $vsArgs -Wait -PassThru
+    $p = Start-WithProgress -FilePath $vsExe -ArgumentList $vsArgs -Label "Installing VS Build Tools"
     # 0 = success, 3010 = success but reboot suggested
     if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
         Fail @"
-Visual Studio Build Tools installer returned code $($p.ExitCode).
+VS Build Tools installer returned code $($p.ExitCode).
 Install manually from https://visualstudio.microsoft.com/downloads/?q=build+tools
 Tick 'Desktop development with C++' during install, then re-run launch.bat.
 "@
     }
     if (Test-Path $vswhere) {
         $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
-        if ($vs) { Write-Host "MSVC Build Tools installed at: $vs"; $haveMsvc = $true }
+        if ($vs) { Write-Host "    Installed at: $vs"; $haveMsvc = $true }
     }
-    if (-not $haveMsvc) {
-        Fail "MSVC Build Tools install did not complete successfully. Try installing manually."
-    }
+    if (-not $haveMsvc) { Fail "VS Build Tools install did not complete." }
 }
 
 # --- 4. Rust --------------------------------------------------------
 Write-Step "Checking Rust"
 try {
-    $v = & rustc --version
-    Write-Host "Found $v"
+    $v = & rustc --version 2>$null
+    Write-Host "    Found $v - skipping install"
 } catch {
-    Write-Host "Downloading rustup-init..."
     $rustupExe = Join-Path $tempDir "rustup-init.exe"
-    Download-File "https://win.rustup.rs/x86_64" $rustupExe
-    Write-Host "Installing Rust stable (silent, ~2 min)..."
-    & $rustupExe -y --default-toolchain stable --profile minimal
-    if ($LASTEXITCODE -ne 0) { Fail "Rust installation failed." }
+    Download-FileWithProgress "https://win.rustup.rs/x86_64" $rustupExe "rustup-init"
+    Write-Host "    Installing Rust stable toolchain (~2 min)..."
+    $p = Start-WithProgress -FilePath $rustupExe -ArgumentList @("-y", "--default-toolchain", "stable", "--profile", "minimal") -Label "Installing Rust"
+    if ($p.ExitCode -ne 0) { Fail "Rust installation failed (exit $($p.ExitCode))." }
     $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
     Refresh-Path
     try {
         $v = & rustc --version
-        Write-Host "Installed $v"
+        Write-Host "    Installed $v"
     } catch {
-        Fail "Rust installed but rustc not on PATH. Close this window and run launch.bat again."
+        Fail "Rust installed but rustc not on PATH. Close this window and re-run launch.bat."
     }
 }
 
-# --- 5. WebView2 runtime (Tauri needs this at runtime) -------------
+# --- 5. WebView2 runtime -------------------------------------------
 Write-Step "Checking WebView2 runtime"
 $wv2Keys = @(
     "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
@@ -234,36 +307,45 @@ $wv2Keys = @(
 $hasWv2 = $false
 foreach ($k in $wv2Keys) { if (Test-Path $k) { $hasWv2 = $true; break } }
 if ($hasWv2) {
-    Write-Host "WebView2 already installed."
+    Write-Host "    Already installed - skipping"
 } else {
-    Write-Host "Downloading WebView2 evergreen bootstrapper..."
     $wv2Exe = Join-Path $tempDir "MicrosoftEdgeWebview2Setup.exe"
     try {
-        Download-File "https://go.microsoft.com/fwlink/p/?LinkId=2124703" $wv2Exe
-        Write-Host "Installing WebView2 runtime (silent)..."
-        Start-Process -FilePath $wv2Exe -ArgumentList "/silent /install" -Wait
+        Download-FileWithProgress "https://go.microsoft.com/fwlink/p/?LinkId=2124703" $wv2Exe "WebView2 bootstrapper"
+        Start-WithProgress -FilePath $wv2Exe -ArgumentList @("/silent", "/install") -Label "Installing WebView2" | Out-Null
     } catch {
-        Write-Host "WebView2 install attempt failed - usually OK on Win11. Will continue." -ForegroundColor Yellow
+        Write-Host "    WebView2 install attempt failed - usually OK on Win11. Continuing." -ForegroundColor Yellow
     }
 }
 
-# --- 6. pnpm install ------------------------------------------------
-Write-Step "Installing JavaScript dependencies (pnpm install)"
+# --- 6. pnpm install -----------------------------------------------
+Write-Step "Installing JavaScript dependencies (pnpm install, 1-3 min)"
+Write-Host "    pnpm streams its own progress below:"
+Write-Host "    -------------------------------------"
 & pnpm install
 if ($LASTEXITCODE -ne 0) { Fail "pnpm install failed. Scroll up for details." }
+Write-Host "    -------------------------------------"
 
-# --- 7. Tauri build -------------------------------------------------
-Write-Step "Building the desktop app (Rust compile - slow part, 10-15 min)"
+# --- 7. Tauri build ------------------------------------------------
+Write-Step "Building the desktop app (Rust compile - the slow part, 10-15 min)"
+Write-Host "    Rust shows 'Compiling <crate>' lines as it works."
+Write-Host "    Long pauses on lines like 'tao', 'wry', 'webkit' are normal."
+Write-Host "    ----------------------------------------------------"
 $env:TAURI_BUILD = "1"
 & pnpm --filter "@workspace/point-cloud-viewer" run tauri build
 if ($LASTEXITCODE -ne 0) { Fail "Tauri build failed. Scroll up for the error." }
+Write-Host "    ----------------------------------------------------"
 
 # --- 8. Launch ------------------------------------------------------
+Write-Step "Launching 3D Viewer"
 if (Test-Path $builtExe) {
-    Write-Step "Done. Launching 3D Viewer..."
-    Start-Process -FilePath $builtExe
+    Write-StepDone
+    $total = (Get-Date) - $Script:TotalStart
     Write-Host ""
+    Write-Host ("Total setup time: {0:hh\:mm\:ss}" -f $total) -ForegroundColor Green
     Write-Host "Next time, just double-click launch.bat - it opens instantly." -ForegroundColor Green
+    Write-Host ""
+    Start-Process -FilePath $builtExe
     Start-Sleep -Seconds 2
 } else {
     Fail "Build finished but $builtExe was not found. Check the build output above."
