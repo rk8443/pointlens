@@ -303,6 +303,10 @@ if ($missing.Count -eq 0) {
     Write-Host ""
 }
 
+# Steps 1-5 install missing prerequisites. Skipped entirely when the
+# preflight above found everything present.
+if ($missing.Count -gt 0) {
+
 # --- 1. Node.js -----------------------------------------------------
 Write-Step "Checking Node.js"
 $nodeOk = $false
@@ -518,6 +522,8 @@ if ($hasWv2) {
         Write-Host "    WebView2 install attempt failed - usually OK on Win11. Continuing." -ForegroundColor Yellow
     }
 }
+
+} # end if ($missing.Count -gt 0) — prerequisite install block
 
 # --- 6. pnpm install -----------------------------------------------
 Write-Step "Installing JavaScript dependencies (pnpm install, 1-3 min)"
