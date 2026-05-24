@@ -898,26 +898,98 @@ export async function parseFile(
   return parseCsv(text);
 }
 
+/**
+ * Generates a procedural dotted Earth point cloud — a Fibonacci sphere lattice
+ * masked so that dots concentrate inside continent ellipses (in lat/lon space)
+ * and thin out over the oceans. Produces a recognizable globe of ~80k points
+ * that loads instantly and shows off the viewer's color-by-height (latitude)
+ * gradient nicely.
+ */
 export function generateDemoCloud(): PointCloudData {
-  const pointCount = 100000;
-  const positions = new Float32Array(pointCount * 3);
-  const intensities = new Float32Array(pointCount);
+  const TARGET_POINTS = 80_000;
+  const RADIUS = 10;
+  const SAMPLES = 220_000; // oversample, then mask
 
-  for (let i = 0; i < pointCount; i++) {
-    const u = Math.random() * Math.PI * 2;
-    const v = Math.random() * Math.PI * 2;
-    const R = 10, r = 3;
-    let x = (R + r * Math.cos(v)) * Math.cos(u);
-    let y = (R + r * Math.cos(v)) * Math.sin(u);
-    let z = r * Math.sin(v) + Math.sin(u * 5) * 1.5;
-    x += (Math.random() - 0.5) * 0.2;
-    y += (Math.random() - 0.5) * 0.2;
-    z += (Math.random() - 0.5) * 0.2;
-    positions[i * 3] = x;
-    positions[i * 3 + 1] = y;
-    positions[i * 3 + 2] = z;
-    intensities[i] = Math.random();
+  // Continents as rough lat/lon ellipses: { latC, lonC, latR, lonR, density }.
+  // Coordinates in degrees. Density 0–1 = probability a sample inside the
+  // ellipse survives the mask.
+  type Cont = { lat: number; lon: number; latR: number; lonR: number; d: number };
+  const CONTINENTS: Cont[] = [
+    { lat: 50, lon: -100, latR: 25, lonR: 35, d: 0.95 }, // North America
+    { lat: -15, lon: -60, latR: 30, lonR: 18, d: 0.9 },  // South America
+    { lat: 52, lon: 18, latR: 14, lonR: 30, d: 0.85 },   // Europe
+    { lat: 5, lon: 22, latR: 30, lonR: 22, d: 0.92 },    // Africa
+    { lat: 45, lon: 95, latR: 25, lonR: 55, d: 0.95 },   // Asia
+    { lat: -25, lon: 135, latR: 12, lonR: 18, d: 0.9 },  // Australia
+    { lat: -82, lon: 0, latR: 8, lonR: 180, d: 0.7 },    // Antarctica ring
+    { lat: 73, lon: -42, latR: 8, lonR: 22, d: 0.7 },    // Greenland
+    { lat: 60, lon: -160, latR: 8, lonR: 18, d: 0.5 },   // Alaska tail
+    { lat: 30, lon: 50, latR: 12, lonR: 16, d: 0.7 },    // Middle East
+    { lat: 20, lon: 80, latR: 12, lonR: 12, d: 0.85 },   // Indian subcontinent
+  ];
+
+  const OCEAN_NOISE_DENSITY = 0.015; // sparse stippling so oceans aren't dead
+
+  // Tiny seeded RNG so the globe is identical run-to-run (mulberry32).
+  let s = 0x6d2b79f5;
+  const rand = () => {
+    s |= 0; s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  const insideAnyContinent = (lat: number, lon: number) => {
+    for (const c of CONTINENTS) {
+      // Wrap-around longitude distance.
+      let dLon = Math.abs(lon - c.lon);
+      if (dLon > 180) dLon = 360 - dLon;
+      const nx = dLon / c.lonR;
+      const ny = (lat - c.lat) / c.latR;
+      if (nx * nx + ny * ny <= 1) {
+        // Soften edges: fall off toward the ellipse rim.
+        const r2 = nx * nx + ny * ny;
+        const falloff = 1 - r2 * 0.4;
+        if (rand() < c.d * falloff) return true;
+      }
+    }
+    return false;
+  };
+
+  // Fibonacci sphere: i / N stepped golden-ratio rotation gives uniform spread.
+  const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  const tmpPositions: number[] = [];
+  const tmpIntensities: number[] = [];
+
+  for (let i = 0; i < SAMPLES && tmpPositions.length / 3 < TARGET_POINTS; i++) {
+    const yNorm = 1 - (i / (SAMPLES - 1)) * 2; // 1 -> -1
+    const radiusAtY = Math.sqrt(1 - yNorm * yNorm);
+    const theta = GOLDEN * i;
+
+    const x = Math.cos(theta) * radiusAtY;
+    const y = yNorm;
+    const z = Math.sin(theta) * radiusAtY;
+
+    // To lat/lon.
+    const lat = Math.asin(y) * (180 / Math.PI);
+    const lon = Math.atan2(z, x) * (180 / Math.PI);
+
+    const inLand = insideAnyContinent(lat, lon);
+    if (!inLand && rand() > OCEAN_NOISE_DENSITY) continue;
+
+    // Tiny surface jitter so it doesn't read as a perfectly mathematical shell.
+    const jitter = inLand ? 0.04 : 0.02;
+    const r = RADIUS + (rand() - 0.5) * jitter;
+    // The viewer uses Z as up by convention — map our y (lat axis) to Z so the
+    // height/colormap gradient reads as a rainbow from south pole to north.
+    tmpPositions.push(x * r, z * r, y * r);
+    // Intensity: brighter on land, dimmer over ocean stippling.
+    tmpIntensities.push(inLand ? 0.55 + rand() * 0.45 : 0.05 + rand() * 0.15);
   }
+
+  const pointCount = tmpPositions.length / 3;
+  const positions = new Float32Array(tmpPositions);
+  const intensities = new Float32Array(tmpIntensities);
 
   return {
     positions,

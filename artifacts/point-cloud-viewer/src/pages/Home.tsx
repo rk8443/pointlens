@@ -491,19 +491,23 @@ export default function Home() {
         )}
 
         {!data ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground z-10">
-            <div className="relative w-28 h-28 mb-7">
-              <div className="absolute inset-0 rounded-full border border-white/[0.06] animate-pulse" />
-              <div className="absolute inset-3 rounded-full border border-white/[0.10]" />
-              <div className="absolute inset-6 rounded-full border border-primary/30" />
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="h-2.5 w-2.5 rounded-full brand-gradient shadow-[0_0_24px_hsl(262_83%_65%/0.65)]" />
-              </div>
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground z-10 overflow-hidden">
+            {/* Slowly rotating dotted globe as ambient empty-state backdrop. */}
+            <img
+              src={`${import.meta.env.BASE_URL}globe-dotted.jpg`}
+              alt=""
+              aria-hidden="true"
+              className="pointer-events-none absolute left-1/2 top-1/2 w-[min(80vh,820px)] h-[min(80vh,820px)] -translate-x-1/2 -translate-y-1/2 opacity-[0.55] animate-spin-slow"
+              style={{ filter: "drop-shadow(0 0 60px hsl(262 83% 60% / 0.25))" }}
+            />
+            {/* Soft violet vignette over the globe for brand cohesion. */}
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_30%,hsl(230_25%_5%/0.7)_75%)]" />
+            <div className="relative z-10 flex flex-col items-center px-6 text-center">
+              <p className="text-[15px] font-medium tracking-tight text-foreground/90">No point cloud loaded</p>
+              <p className="text-[12px] mt-2 text-muted-foreground/85">
+                Drop a file in the sidebar or load the demo dataset
+              </p>
             </div>
-            <p className="text-[15px] font-medium tracking-tight text-foreground/90">No point cloud loaded</p>
-            <p className="text-[12px] mt-2 text-muted-foreground/85">
-              Drop a file in the sidebar or load the demo dataset
-            </p>
           </div>
         ) : (
           <>

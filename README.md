@@ -4,6 +4,10 @@ An offline-first desktop and web viewer for industrial **3D height-map / point-c
 
 > **Note on naming.** *LMI*, *Gocator*, *Keyence*, *Cognex* and *VisionPro* are trademarks of their respective owners. PointLens is an independent third-party viewer that reads files exported by those scanners; it is not affiliated with or endorsed by any of those companies.
 
+<p align="center">
+  <img src="artifacts/point-cloud-viewer/public/globe-dotted.jpg" alt="Dotted globe — PointLens turns any surface into a point cloud" width="320" />
+</p>
+
 ![PointLens — a rainbow-coloured 3D point cloud rendered in the PointLens viewer](artifacts/point-cloud-viewer/public/opengraph.png)
 
 ---

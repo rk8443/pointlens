@@ -193,3 +193,14 @@
     @apply font-sans antialiased bg-background text-foreground;
   }
 }
+
+/* Slow rotation for the empty-state dotted globe — full revolution ~60s. */
+@keyframes spin-slow {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to   { transform: translate(-50%, -50%) rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 60s linear infinite;
+  transform-origin: center;
+  will-change: transform;
+}
