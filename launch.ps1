@@ -138,6 +138,10 @@ $artifact     = Join-Path $repoRoot "artifacts\point-cloud-viewer"
 $srcTauri     = Join-Path $artifact "src-tauri"
 $builtExeDir  = Join-Path $srcTauri "target\release"
 $builtExe     = Join-Path $builtExeDir "PointLens.exe"
+# The Cargo crate is still named `three_d_viewer` from before the rebrand,
+# so `tauri build` produces three_d_viewer.exe even though productName is
+# "PointLens". Treat it as a valid launch target.
+$cargoExe     = Join-Path $builtExeDir "three_d_viewer.exe"
 $legacyExe    = Join-Path $builtExeDir "3D Viewer.exe"
 $tempDir      = Join-Path $env:TEMP "pointlens-setup"
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null

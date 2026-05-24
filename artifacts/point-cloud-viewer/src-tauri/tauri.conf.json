@@ -31,7 +31,7 @@
     }
   },
   "bundle": {
-    "active": true,
+    "active": false,
     "targets": ["msi", "nsis"],
     "publisher": "PointLens",
     "category": "Utility",
