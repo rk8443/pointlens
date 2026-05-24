@@ -2,15 +2,14 @@
 #  3D Viewer - launch script (Windows)
 # =====================================================================
 #  Usage:   double-click launch.bat  (which runs this script)
-#  Or:      Right-click launch.ps1 -> "Run with PowerShell"
 #
-#  First run: auto-installs all prerequisites (Node.js, pnpm, Rust,
-#             Visual Studio C++ Build Tools), installs project deps,
-#             builds the desktop app, then launches it.
-#  Later runs: just launches the existing 3D Viewer.exe - no checks.
+#  First run: auto-installs Node.js, Visual Studio C++ Build Tools,
+#             Rust, WebView2; installs project deps; builds the desktop
+#             app; then launches it.
+#  Later runs: just launches the existing 3D Viewer.exe in ~1 second.
 #
-#  Requires Windows 10/11 64-bit with winget available (winget is
-#  preinstalled on Windows 11 and on up-to-date Windows 10).
+#  Installers are downloaded directly from Microsoft / Node.js / Rust
+#  (no winget required), so this works on older Windows 10 builds too.
 # =====================================================================
 
 $ErrorActionPreference = "Stop"
@@ -25,22 +24,31 @@ function Fail($msg) {
     Read-Host "Press Enter to close"
     exit 1
 }
-
-# Refresh PATH for current session after installs that added to system PATH.
 function Refresh-Path {
     $machine = [Environment]::GetEnvironmentVariable("Path", "Machine")
     $user    = [Environment]::GetEnvironmentVariable("Path", "User")
     $env:Path = "$machine;$user;$env:Path"
 }
+function Download-File($url, $outPath) {
+    Write-Host "  downloading $url"
+    $oldPref = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'  # massively speeds up Invoke-WebRequest
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $outPath -UseBasicParsing
+    } finally {
+        $ProgressPreference = $oldPref
+    }
+}
 
 # --- Move to the repo root (folder containing this script) ----------
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$repoRoot     = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $repoRoot
-
 $artifact     = Join-Path $repoRoot "artifacts\point-cloud-viewer"
 $srcTauri     = Join-Path $artifact "src-tauri"
 $builtExeDir  = Join-Path $srcTauri "target\release"
 $builtExe     = Join-Path $builtExeDir "3D Viewer.exe"
+$tempDir      = Join-Path $env:TEMP "3dviewer-setup"
+New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 # --- Fast path: built binary already exists, just launch it ---------
 if (Test-Path $builtExe) {
@@ -58,19 +66,8 @@ Write-Host "This will install everything needed and build the app."
 Write-Host "First run: 15-25 minutes (downloads ~2 GB of build tools)."
 Write-Host "After that, double-clicking launch.bat opens the app in 1 sec."
 Write-Host ""
-
-# --- 0. Check winget (needed for auto-installs) --------------------
-Write-Step "Checking winget"
-try {
-    & winget --version | Out-Null
-    Write-Host "winget OK"
-} catch {
-    Fail @"
-winget is not available on this system.
-winget ships with Windows 11 and recent Windows 10 builds.
-Update Windows or install 'App Installer' from the Microsoft Store, then re-run.
-"@
-}
+Write-Host "You will see UAC prompts during installs. Click YES to allow." -ForegroundColor Yellow
+Write-Host ""
 
 # --- 1. Node.js -----------------------------------------------------
 Write-Step "Checking Node.js"
@@ -87,19 +84,22 @@ try {
     Write-Host "Node.js not found."
 }
 if (-not $nodeOk) {
-    Write-Host "Installing Node.js LTS via winget..."
-    & winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent
-    if ($LASTEXITCODE -ne 0) { Fail "Node.js install failed. Install manually from https://nodejs.org/ and re-run." }
+    Write-Host "Downloading Node.js 20 LTS installer..."
+    $nodeMsi = Join-Path $tempDir "node-lts.msi"
+    Download-File "https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi" $nodeMsi
+    Write-Host "Running Node.js installer (silent, may take 1-2 min, UAC will prompt)..."
+    $p = Start-Process msiexec.exe -ArgumentList "/i `"$nodeMsi`" /qn /norestart" -Wait -PassThru
+    if ($p.ExitCode -ne 0) { Fail "Node.js installer returned code $($p.ExitCode). Install manually from https://nodejs.org/" }
     Refresh-Path
     try {
         $v = & node --version
         Write-Host "Installed Node.js $v"
     } catch {
-        Fail "Node.js installed but not on PATH. Close this window and run launch.bat again."
+        Fail "Node.js installed but not on PATH yet. Close this window and run launch.bat again."
     }
 }
 
-# --- 2. pnpm via corepack ------------------------------------------
+# --- 2. pnpm via corepack (ships with Node.js) ---------------------
 Write-Step "Checking pnpm"
 try {
     $v = & pnpm --version
@@ -116,7 +116,7 @@ try {
     Refresh-Path
 }
 
-# --- 3. Visual Studio C++ Build Tools (needed for Rust linker) -----
+# --- 3. Visual Studio C++ Build Tools (Rust linker needs this) ----
 Write-Step "Checking Visual Studio C++ Build Tools"
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $haveMsvc = $false
@@ -125,23 +125,32 @@ if (Test-Path $vswhere) {
     if ($vs) { Write-Host "Found Visual Studio at: $vs"; $haveMsvc = $true }
 }
 if (-not $haveMsvc) {
-    Write-Host "MSVC Build Tools not found. Installing via winget (this is the big one - ~1.5 GB, 5-10 min)..."
-    # Install Build Tools with the required workload and Windows SDK.
-    & winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --silent --override "--quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "winget reported an error code $LASTEXITCODE. Re-checking..." -ForegroundColor Yellow
+    Write-Host "Downloading Visual Studio 2022 Build Tools bootstrapper..."
+    $vsExe = Join-Path $tempDir "vs_BuildTools.exe"
+    Download-File "https://aka.ms/vs/17/release/vs_BuildTools.exe" $vsExe
+    Write-Host "Running Build Tools installer (~1.5 GB, 5-15 min, UAC will prompt)..."
+    Write-Host "Installing workload: Desktop development with C++ + Windows 11 SDK"
+    $vsArgs = @(
+        "--quiet", "--wait", "--norestart", "--nocache",
+        "--add", "Microsoft.VisualStudio.Workload.VCTools",
+        "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621",
+        "--includeRecommended"
+    )
+    $p = Start-Process -FilePath $vsExe -ArgumentList $vsArgs -Wait -PassThru
+    # 0 = success, 3010 = success but reboot suggested
+    if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+        Fail @"
+Visual Studio Build Tools installer returned code $($p.ExitCode).
+Install manually from https://visualstudio.microsoft.com/downloads/?q=build+tools
+Tick 'Desktop development with C++' during install, then re-run launch.bat.
+"@
     }
     if (Test-Path $vswhere) {
         $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
         if ($vs) { Write-Host "MSVC Build Tools installed at: $vs"; $haveMsvc = $true }
     }
     if (-not $haveMsvc) {
-        Fail @"
-MSVC Build Tools install did not complete successfully.
-Please install manually:
-  https://visualstudio.microsoft.com/downloads/?q=build+tools
-Tick 'Desktop development with C++' during install, then re-run launch.bat.
-"@
+        Fail "MSVC Build Tools install did not complete successfully. Try installing manually."
     }
 }
 
@@ -151,9 +160,10 @@ try {
     $v = & rustc --version
     Write-Host "Found $v"
 } catch {
-    Write-Host "Rust not found. Downloading rustup-init..."
-    $rustupExe = Join-Path $env:TEMP "rustup-init.exe"
-    Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustupExe
+    Write-Host "Downloading rustup-init..."
+    $rustupExe = Join-Path $tempDir "rustup-init.exe"
+    Download-File "https://win.rustup.rs/x86_64" $rustupExe
+    Write-Host "Installing Rust stable (silent, ~2 min)..."
     & $rustupExe -y --default-toolchain stable --profile minimal
     if ($LASTEXITCODE -ne 0) { Fail "Rust installation failed." }
     $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
@@ -166,16 +176,27 @@ try {
     }
 }
 
-# --- 5. WebView2 runtime (needed at runtime by Tauri) --------------
+# --- 5. WebView2 runtime (Tauri needs this at runtime) -------------
 Write-Step "Checking WebView2 runtime"
-$webview2Key = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
-$hasWebView2 = Test-Path $webview2Key
-if ($hasWebView2) {
+$wv2Keys = @(
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+    "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+    "HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+)
+$hasWv2 = $false
+foreach ($k in $wv2Keys) { if (Test-Path $k) { $hasWv2 = $true; break } }
+if ($hasWv2) {
     Write-Host "WebView2 already installed."
 } else {
-    Write-Host "Installing WebView2 runtime via winget..."
-    & winget install --id Microsoft.EdgeWebView2Runtime -e --accept-source-agreements --accept-package-agreements --silent 2>$null
-    # Non-fatal if it can't - Windows 11 always has it; some Win10 builds too.
+    Write-Host "Downloading WebView2 evergreen bootstrapper..."
+    $wv2Exe = Join-Path $tempDir "MicrosoftEdgeWebview2Setup.exe"
+    try {
+        Download-File "https://go.microsoft.com/fwlink/p/?LinkId=2124703" $wv2Exe
+        Write-Host "Installing WebView2 runtime (silent)..."
+        Start-Process -FilePath $wv2Exe -ArgumentList "/silent /install" -Wait
+    } catch {
+        Write-Host "WebView2 install attempt failed - usually OK on Win11. Will continue." -ForegroundColor Yellow
+    }
 }
 
 # --- 6. pnpm install ------------------------------------------------
