@@ -86,16 +86,64 @@ try {
 if (-not $nodeOk) {
     Write-Host "Downloading Node.js 20 LTS installer..."
     $nodeMsi = Join-Path $tempDir "node-lts.msi"
+    $nodeLog = Join-Path $tempDir "node-install.log"
     Download-File "https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi" $nodeMsi
-    Write-Host "Running Node.js installer (silent, may take 1-2 min, UAC will prompt)..."
-    $p = Start-Process msiexec.exe -ArgumentList "/i `"$nodeMsi`" /qn /norestart" -Wait -PassThru
-    if ($p.ExitCode -ne 0) { Fail "Node.js installer returned code $($p.ExitCode). Install manually from https://nodejs.org/" }
+
+    Write-Host "Running Node.js installer."
+    Write-Host "  - A UAC prompt will appear asking for admin permission. Click YES."
+    Write-Host "  - A small progress bar will then appear. Wait for it to finish (1-2 min)."
+
+    # /qb = basic UI (shows progress bar but no questions)
+    # /L*v = verbose log so we can diagnose failures
+    # -Verb RunAs explicitly requests UAC elevation
+    $msiArgs = "/i `"$nodeMsi`" /qb /norestart /L*v `"$nodeLog`""
+    try {
+        $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Verb RunAs -Wait -PassThru
+    } catch {
+        Fail @"
+Could not start the Node.js installer with admin rights.
+This usually means UAC was cancelled or this account cannot elevate.
+
+Easiest fix: install Node.js manually, then re-run launch.bat:
+  1. Open this file in a browser:  $nodeMsi
+  2. Double-click it, accept defaults.
+  3. Close this PowerShell window completely.
+  4. Double-click launch.bat again.
+
+If your account can't install software at all, see the README section
+'If launch.bat can't install something (locked-down / non-admin PC)'.
+"@
+    }
+
+    if ($p.ExitCode -ne 0) {
+        $hint = switch ($p.ExitCode) {
+            1602 { "the UAC prompt was cancelled" }
+            1603 { "a fatal MSI error (often: not admin, antivirus blocked it, or a conflicting old Node install)" }
+            1618 { "another MSI install is already running - close it and retry" }
+            1625 { "your account is blocked from installing software by group policy" }
+            default { "exit code $($p.ExitCode)" }
+        }
+        Fail @"
+Node.js installer failed: $hint.
+
+Quick fixes to try, in order:
+  1. Run launch.bat again and CLICK YES on the UAC prompt this time.
+  2. Open File Explorer, navigate to the installer, right-click -> Run as administrator:
+       $nodeMsi
+  3. If you don't have admin rights at all, ask IT to install Node.js 20 LTS
+     from https://nodejs.org/  (or follow the README's 'locked-down PC' section).
+
+Full installer log saved to:
+  $nodeLog
+(open it and search for 'Return value 3' to find the underlying error)
+"@
+    }
     Refresh-Path
     try {
         $v = & node --version
         Write-Host "Installed Node.js $v"
     } catch {
-        Fail "Node.js installed but not on PATH yet. Close this window and run launch.bat again."
+        Fail "Node.js installed but not on PATH yet. Close this window and double-click launch.bat again."
     }
 }
 
