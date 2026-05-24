@@ -142,19 +142,56 @@ $legacyExe    = Join-Path $builtExeDir "3D Viewer.exe"
 $tempDir      = Join-Path $env:TEMP "pointlens-setup"
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
-# --- Fast path: built binary already exists, just launch it ---------
-if (Test-Path $builtExe) {
-    Write-Host "Launching PointLens..." -ForegroundColor Green
-    Start-Process -FilePath $builtExe
-    Start-Sleep -Seconds 2
-    exit 0
+# --- Auto-update from GitHub before each launch ---------------------
+# Without this, anyone who ran launch.bat once and produced PointLens.exe
+# would never see new releases (the fast-path below would just relaunch
+# the stale binary). We do a best-effort "git pull": if it succeeds and
+# brings in new commits, we delete the cached binary so the script falls
+# through to the rebuild path further down.
+#
+# Skipped silently when:
+#   - the folder isn't a git checkout (e.g. user downloaded a ZIP),
+#   - git isn't installed,
+#   - the machine is offline,
+#   - the user passed -NoUpdate (handy for offline laptops).
+$rebuildNeeded = $false
+if (-not ($args -contains '-NoUpdate') -and (Test-Path (Join-Path $repoRoot ".git"))) {
+    $gitOk = $false
+    try { & git --version 2>&1 | Out-Null; $gitOk = ($LASTEXITCODE -eq 0) } catch {}
+    if ($gitOk) {
+        Write-Host "Checking for updates..." -ForegroundColor DarkCyan
+        $headBefore = (& git -C $repoRoot rev-parse HEAD 2>$null)
+        # --ff-only: refuse to merge if the local branch has diverged, so we
+        # never silently rewrite a developer's in-progress work.
+        & git -C $repoRoot pull --ff-only --quiet 2>&1 | Out-Null
+        $headAfter  = (& git -C $repoRoot rev-parse HEAD 2>$null)
+        if ($headBefore -and $headAfter -and ($headBefore -ne $headAfter)) {
+            Write-Host "  Updated $($headBefore.Substring(0,7)) -> $($headAfter.Substring(0,7)). Rebuilding..." -ForegroundColor Yellow
+            $rebuildNeeded = $true
+        } elseif ($headBefore -and $headAfter) {
+            Write-Host "  Already up to date ($($headAfter.Substring(0,7)))." -ForegroundColor DarkGray
+        } else {
+            Write-Host "  Skipped (couldn't reach GitHub)." -ForegroundColor DarkGray
+        }
+    }
 }
-# Backward-compat: an older build may have produced "3D Viewer.exe".
-if (Test-Path $legacyExe) {
-    Write-Host "Launching PointLens..." -ForegroundColor Green
-    Start-Process -FilePath $legacyExe
-    Start-Sleep -Seconds 2
-    exit 0
+
+# --- Fast path: built binary already exists, just launch it ---------
+# Skipped when an update was just pulled, so users always get the new code.
+if (-not $rebuildNeeded) {
+    if (Test-Path $builtExe) {
+        Write-Host "Launching PointLens..." -ForegroundColor Green
+        Start-Process -FilePath $builtExe
+        Start-Sleep -Seconds 2
+        exit 0
+    }
+    # Backward-compat: an older build may have produced "3D Viewer.exe".
+    if (Test-Path $legacyExe) {
+        Write-Host "Launching PointLens..." -ForegroundColor Green
+        Start-Process -FilePath $legacyExe
+        Start-Sleep -Seconds 2
+        exit 0
+    }
 }
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
