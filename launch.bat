@@ -1,12 +1,20 @@
 @echo off
 REM ====================================================================
 REM  PointLens - double-click to launch.
+REM
 REM  First run: auto-installs Node.js, MSVC Build Tools, Rust, WebView2,
 REM             project deps, builds the app, then opens it.
-REM  Subsequent runs: opens the app in ~1 second, no checks.
+REM  Later runs: checks GitHub for updates (fast), rebuilds only if new
+REM              commits were pulled, otherwise launches the cached
+REM              PointLens.exe in ~1 second.
 REM
-REM  The first-time installs need admin rights (winget elevates itself
-REM  via UAC prompts).  Click "Yes" when Windows asks.
+REM  Flags (optional - pass after the script name):
+REM    -NoUpdate     skip the "git pull" step (useful offline)
+REM
+REM  Example:  launch.bat -NoUpdate
+REM
+REM  The first-time installs need admin rights; click "Yes" when Windows
+REM  shows the UAC prompt.
 REM ====================================================================
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0launch.ps1" %*
 if errorlevel 1 pause
